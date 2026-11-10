@@ -32,9 +32,27 @@ enum ProcessRunner {
 
 struct DisplayBackend {
     let helper: URL
+    /// Passes and the pause before each verification read; macOS reports a stale layout right after a reconfiguration.
+    var attempts = 3
+    var settle: TimeInterval = 1.5
     init(helper: URL = Bundle.main.executableURL!.deletingLastPathComponent().appendingPathComponent("displayplacer")) { self.helper = helper }
     func read() throws -> [ConnectedDisplay] { try DisplayParser.parse(ProcessRunner.run(helper, arguments: ["list"])) }
     func apply(_ displays: [DisplaySetting]) throws { _ = try ProcessRunner.run(helper, arguments: Configuration.arguments(for: displays)) }
+    /// Apply until the layout verifies. One pass can leave a mirror set or a rotation unfinished while macOS is still
+    /// reconfiguring (AirPlay mirrors after a rotation), and the helper may exit non-zero although a later pass succeeds.
+    /// Only the verified result decides; the last helper error is reported if no attempt verifies.
+    func applyVerified(_ displays: [DisplaySetting], rejected: String) throws -> [ConnectedDisplay] {
+        var failure: Error?
+        for attempt in 1...max(1, attempts) {
+            do { try apply(displays) } catch { failure = error }
+            Thread.sleep(forTimeInterval: settle)
+            do {
+                let actual = try read()
+                if Configuration.matches(displays, actual: actual.map(\.setting)) { return actual }
+            } catch { if attempt == attempts { throw error } }
+        }
+        throw DisplayMindError([rejected, (failure?.localizedDescription).map { "Display helper: \($0)" }].compactMap { $0 }.joined(separator: " "))
+    }
 }
 
 enum Hardware {
@@ -222,10 +240,12 @@ struct RecoveryController {
     /// A `restoring-*.json` that no result accounts for: the watchdog died after claiming the journal.
     func orphanedRestore(maxAge: TimeInterval = 3600) -> RecoveryJournal? {
         let settled = result()?.id
+        // A result written after a snapshot means a later change was handled since; never re-apply the older layout.
+        let settledAt = (try? resultURL.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate ?? .distantPast
         for url in snapshots() {
             guard let journal = try? JSONDecoder().decode(RecoveryJournal.self, from: Data(contentsOf: url)), journal.id != settled,
                   let modified = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate,
-                  Date().timeIntervalSince(modified) < maxAge else { continue }
+                  Date().timeIntervalSince(modified) < maxAge, modified > settledAt else { continue }
             return journal
         }
         return nil
@@ -233,6 +253,8 @@ struct RecoveryController {
     /// A `restoring-*.json` past the resume limit that no result accounts for: nobody will restore it. Returned once; it is renamed `abandoned-*` so it is never reported again.
     func takeStaleUnsettledRestore(maxAge: TimeInterval = 3600) -> RecoveryJournal? {
         let settled = result()?.id
+        // A result written after a snapshot means a later change was handled since; never re-apply the older layout.
+        let settledAt = (try? resultURL.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate ?? .distantPast
         for url in snapshots() {
             guard let journal = try? JSONDecoder().decode(RecoveryJournal.self, from: Data(contentsOf: url)), journal.id != settled,
                   let modified = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate,
@@ -322,9 +344,9 @@ struct RecoveryController {
                let first = previous.first(where: { $0.enabled && $0.mirrorOf == nil }) {
                 Configuration.makeMain(first.id, displays: &previous)
             }
-            if !Configuration.matches(previous, actual: actual.map(\.setting)) { try backend.apply(previous) }
-            let restored = try backend.read()
-            guard Configuration.matches(previous, actual: restored.map(\.setting)) else { throw DisplayMindError("macOS did not restore every display setting. Open Display Settings to recover the layout.") }
+            if !Configuration.matches(previous, actual: actual.map(\.setting)) {
+                _ = try backend.applyVerified(previous, rejected: "macOS did not restore every display setting. Open Display Settings to recover the layout.")
+            }
         } catch { failure = [failure, error.localizedDescription].compactMap { $0 }.joined(separator: " ") }
         let result = RecoveryResult(id: journal.id, error: failure)
         if let data = try? JSONEncoder().encode(result) { try? data.write(to: resultURL, options: .atomic) }

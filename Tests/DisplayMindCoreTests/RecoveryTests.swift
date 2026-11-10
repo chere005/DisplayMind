@@ -25,7 +25,7 @@ final class RecoveryTests: XCTestCase {
         let executable = dir.appendingPathComponent("fake-displayplacer")
         try script.write(to: executable, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: executable.path)
-        return DisplayBackend(helper: executable)
+        var backend = DisplayBackend(helper: executable); backend.settle = 0.01; return backend
     }
     func testWatchdogRestoresAndVerifiesWithoutUI() throws {
         let previous = layout(); var changed = previous; changed[1].rotation = 270
@@ -155,5 +155,16 @@ final class RecoveryTests: XCTestCase {
         held.wait()
         recovery.watch(backend: backend, disconnectAirPlay: { _ in })   // blocks until the other holder is done, then restores
         XCTAssertGreaterThan(appliedCount(), 0); XCTAssertNil(recovery.result()?.error)
+    }
+    func testOrphanOlderThanTheLatestResultIsNeverResumed() throws {
+        // 0.2.0 kept a failed snapshot beside results of later changes; upgrading must not re-apply that old layout.
+        let recovery = RecoveryController(directory: dir)
+        let old = RecoveryJournal(deadline: .distantPast, previous: [DisplaySetting(id: "00000000-0000-0000-0000-000000000001", name: "A", mode: DisplayMode(width: 1920, height: 1080, hertz: 60))])
+        let snapshot = dir.appendingPathComponent("restoring-\(old.id).json")
+        try JSONEncoder().encode(old).write(to: snapshot)
+        try FileManager.default.setAttributes([.modificationDate: Date().addingTimeInterval(-120)], ofItemAtPath: snapshot.path)
+        XCTAssertEqual(recovery.orphanedRestore()?.id, old.id)
+        try JSONEncoder().encode(RecoveryResult(id: UUID(), error: nil)).write(to: recovery.resultURL)
+        XCTAssertNil(recovery.orphanedRestore())
     }
 }

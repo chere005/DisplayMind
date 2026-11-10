@@ -15,9 +15,9 @@ die() { echo "$*" >&2; exit 1; }
 
 test -d dist/DisplayMind.app || die 'Build the app with tools/preflight.sh first.'
 [ ! -e "$STATE_DIR/pending-change.json" ] || die "A display change is pending ($STATE_DIR/pending-change.json); keep or revert it first."
-for F in "$STATE_DIR"/restoring-*.json; do
-  [ ! -e "$F" ] || die "A display recovery is in progress or unsettled ($F); let it finish or restore the layout first."
-done
+# A snapshot touched in the last 3 minutes is a restore in flight; an older one is a kept record of a failed restore.
+RECENT=$(find "$STATE_DIR" -maxdepth 1 -name 'restoring-*.json' -mmin -3 2>/dev/null | head -1)
+[ -z "$RECENT" ] || die "A display recovery is in progress ($RECENT); let it finish first."
 codesign --verify --deep --strict dist/DisplayMind.app
 mkdir -p "$DEST"
 TARGET="$DEST/DisplayMind.app"

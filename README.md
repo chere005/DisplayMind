@@ -22,7 +22,7 @@ In **Connection rules**, choose a preset and mark each relevant display or USB d
 
 [Layout editor](docs/preset-editor.png) · [Connection rules](docs/connection-rules.png) · [Rule editor](docs/rule-editor.png)
 
-An edited preset must be applied and kept once before it can run automatically. Automatic applications verify the resulting configuration and revert on failure. Newly connected USB devices appear automatically. Previously selected devices remain available in the rule editor after disconnecting.
+An edited preset must be applied and kept once before it can run automatically. Every application is verified against the preset and retried up to three times while macOS settles (a mirror can drop after a rotation); automatic applications revert on failure. Newly connected USB devices appear automatically. Previously selected devices remain available in the rule editor after disconnecting.
 
 ## AirPlay
 

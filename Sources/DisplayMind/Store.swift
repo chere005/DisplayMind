@@ -283,7 +283,7 @@ import ServiceManagement
             }
             let needsAirPlay = preset.airPlay.map { target in !current.contains(where: { $0.id == target.displayID }) } ?? false
             if needsAirPlay { try airPlay.requireAccess() }
-            var journal = try recovery.arm(previous: current.map(\.setting), setupTimeout: needsAirPlay ? 180 : 65, launch: launchWatchdog)
+            var journal = try recovery.arm(previous: current.map(\.setting), setupTimeout: needsAirPlay ? 240 : 120, launch: launchWatchdog)
             recoveryID = journal.id
             if needsAirPlay, let target = preset.airPlay {
                 status = "Connecting AirPlay to \(target.receiverName)…"
@@ -300,14 +300,13 @@ import ServiceManagement
             var connected = current
             if needsAirPlay { connected = try await Task.detached { try backend.read() }.value }
             if let reason = Configuration.availability(preset, connected: Set(connected.map(\.id)), allowAirPlayConnection: false) { throw DisplayMindError(reason) }
+            var actual = connected
             if !Configuration.matches(preset.displays, actual: connected.map(\.setting)) {
-                try await Task.detached { try backend.apply(preset.displays) }.value
+                actual = try await Task.detached {
+                    try backend.applyVerified(preset.displays, rejected: "macOS did not accept every setting in this preset.")
+                }.value
             }
-            let actual = try await Task.detached { try backend.read() }.value
             displays = Hardware.nameDisplays(actual)
-            guard Configuration.matches(preset.displays, actual: actual.map(\.setting)) else {
-                throw DisplayMindError("macOS did not accept every setting in this preset.")
-            }
             if automatic {
                 try recovery.keep(id: journal.id)
                 recoveryID = nil

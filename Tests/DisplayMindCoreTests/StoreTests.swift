@@ -37,7 +37,7 @@ final class StoreTests: XCTestCase {
         let executable = dir.appendingPathComponent("fake-displayplacer")
         try script.write(to: executable, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: executable.path)
-        return DisplayBackend(helper: executable)
+        var backend = DisplayBackend(helper: executable); backend.settle = 0.01; return backend
     }
     func applyCalls() -> Int { (try? String(contentsOf: dir.appendingPathComponent("calls.txt")).split(separator: "\n").count) ?? 0 }
     func journalExists() -> Bool { FileManager.default.fileExists(atPath: data.appendingPathComponent("pending-change.json").path) }
@@ -97,6 +97,18 @@ final class StoreTests: XCTestCase {
         XCTAssertEqual(RecoveryController(directory: data).result()?.error, nil)
         XCTAssertNotNil(RecoveryController(directory: data).result())
         XCTAssertNil(store.menuError); XCTAssertFalse(store.settings.presets[0].confirmed)
+    }
+    @MainActor func testApplyRetriesUntilTheLayoutVerifies() async throws {
+        // A first pass that leaves the layout half-applied (a mirror dropped after a rotation) is retried, not reverted.
+        let backend = try backend(current: previous, steps: [1: partial, 2: target])
+        let preset = Preset(name: "Wide", displays: target)
+        try save(presets: [preset])
+        let store = makeStore(backend)
+        await store.apply(preset)
+        XCTAssertEqual(applyCalls(), 2); XCTAssertNotNil(store.pending); XCTAssertFalse(store.busy)
+        XCTAssertNil(store.error); XCTAssertNil(store.menuError)
+        store.keep()
+        XCTAssertTrue(store.settings.presets[0].confirmed); XCTAssertTrue(try layoutMatches(backend, target))
     }
     @MainActor func testUnverifiedApplyRequestsRevertAndReportsRestoredLayout() async throws {
         let backend = try backend(current: previous, steps: [1: partial, 2: previous])
