@@ -94,6 +94,51 @@ enum Hardware {
     }
 }
 
+/// Display reconfiguration, USB attach/detach and wake, delivered on the main actor. Everything is unregistered on deinit.
+final class LiveHardwareMonitor {
+    private final class Sink: @unchecked Sendable {
+        var handler: (@MainActor (HardwareChange) -> Void)?
+        func emit(_ change: HardwareChange) { Task { @MainActor in handler?(change) } }
+    }
+    private let sink = Sink()
+    private let context: UnsafeMutableRawPointer
+    private var port: IONotificationPortRef?
+    private var iterators: [io_iterator_t] = []
+    private var wake: NSObjectProtocol?
+    private static let displayCallback: CGDisplayReconfigurationCallBack = { _, flags, context in
+        guard let context, !flags.contains(.beginConfigurationFlag) else { return }
+        Unmanaged<Sink>.fromOpaque(context).takeUnretainedValue().emit(.displays)
+    }
+    private static let usbCallback: IOServiceMatchingCallback = { context, iterator in
+        while case let service = IOIteratorNext(iterator), service != 0 { IOObjectRelease(service) }   // draining re-arms the notification
+        if let context { Unmanaged<Sink>.fromOpaque(context).takeUnretainedValue().emit(.usb) }
+    }
+
+    @MainActor init(onChange: @escaping @MainActor (HardwareChange) -> Void) {
+        sink.handler = onChange
+        context = Unmanaged.passRetained(sink).toOpaque()
+        CGDisplayRegisterReconfigurationCallback(Self.displayCallback, context)
+        port = IONotificationPortCreate(kIOMainPortDefault)
+        IONotificationPortSetDispatchQueue(port, DispatchQueue.main)
+        for type in [kIOFirstMatchNotification, kIOTerminatedNotification] {
+            var iterator: io_iterator_t = 0
+            guard IOServiceAddMatchingNotification(port, type, IOServiceMatching("IOUSBHostDevice"), Self.usbCallback, context, &iterator) == KERN_SUCCESS else { continue }
+            iterators.append(iterator)
+            while case let service = IOIteratorNext(iterator), service != 0 { IOObjectRelease(service) }
+        }
+        let sink = self.sink
+        wake = NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { _ in sink.emit(.wake) }
+    }
+    deinit {
+        if let wake { NSWorkspace.shared.notificationCenter.removeObserver(wake) }
+        CGDisplayRemoveReconfigurationCallback(Self.displayCallback, context)
+        iterators.forEach { IOObjectRelease($0) }
+        if let port { IONotificationPortDestroy(port) }
+        sink.handler = nil
+        Unmanaged<Sink>.fromOpaque(context).release()
+    }
+}
+
 /// An independent process owns the deadline. Closing or crashing the UI cannot cancel rollback.
 struct RecoveryController {
     let directory: URL

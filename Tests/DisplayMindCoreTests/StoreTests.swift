@@ -253,4 +253,119 @@ final class StoreTests: XCTestCase {
         a[0].mode.hertz = 30; XCTAssertFalse(Configuration.sameLayout(a, layout()))
         XCTAssertFalse(Configuration.sameLayout([a[0]], layout()))
     }
+
+    // MARK: change notifications instead of polling
+
+    final class FakeMonitor {
+        var handler: (@MainActor (HardwareChange) -> Void)?
+        var stopped = false
+        final class Token { let owner: FakeMonitor; init(_ o: FakeMonitor) { owner = o }; deinit { owner.stopped = true } }
+        var monitor: HardwareMonitor { HardwareMonitor { [self] h in handler = h; return Token(self) } }
+        @MainActor func fire(_ change: HardwareChange = .usb) { handler?(change) }
+    }
+    final class FakeDevices: @unchecked Sendable {
+        private let lock = NSLock(); private var list: [Device]; private var n = 0
+        init(_ list: [Device]) { self.list = list }
+        var devices: [Device] { lock.lock(); defer { lock.unlock() }; n += 1; return list }
+        func set(_ new: [Device]) { lock.lock(); list = new; lock.unlock() }
+        var reads: Int { lock.lock(); defer { lock.unlock() }; return n }
+    }
+    @MainActor func makeEventStore(_ backend: DisplayBackend, _ fake: FakeDevices, _ monitor: FakeMonitor, settle: TimeInterval = 0.2) -> Store {
+        let hardware = HardwareProvider(devices: { fake.devices }, connectedDisplayIDs: { [] }, nameDisplays: { $0 })
+        let airPlay = AirPlayActions(authorized: { true }, requireAccess: {}, requestAccess: {}, receivers: { [] },
+                                     setConnected: { _, _, _ in XCTFail("AirPlay must not be touched") })
+        let posts = self.posts
+        let store = Store(directory: data, backend: backend, hardware: hardware, airPlay: airPlay, notifier: Notifier { _, body in posts.items.append(body) },
+                          launchWatchdog: { directory in
+                              Thread.detachNewThread { RecoveryController(directory: directory).watch(backend: backend, disconnectAirPlay: { _ in }) }
+                          }, windowVisible: { false }, background: false, monitor: monitor.monitor)
+        store.settle = settle; store.coalesce = 0.05
+        return store
+    }
+    @MainActor func eventually(_ timeout: TimeInterval = 10, _ done: @escaping () -> Bool) async {
+        let end = Date().addingTimeInterval(timeout)
+        while true {
+            if done() || Date() >= end { return }
+            try? await Task.sleep(nanoseconds: 50_000_000)
+        }
+    }
+    func deskRule() throws -> (Preset, ConnectionRule) {
+        let preset = Preset(name: "Wide", displays: target, confirmed: true)
+        let rule = ConnectionRule(name: "Desk", presetID: preset.id, requiredDevices: [bothDisplays[1]])
+        try save(presets: [preset], rules: [rule])
+        return (preset, rule)
+    }
+
+    @MainActor func testChangeEventThenStableDevicesAppliesRuleOnceAfterSettle() async throws {
+        let backend = try backend(current: previous, steps: [1: target])
+        _ = try deskRule()
+        let fake = FakeDevices([bothDisplays[0]]), monitor = FakeMonitor()
+        let store = makeEventStore(backend, fake, monitor, settle: 0.6)
+        await eventually { !store.isTicking }   // launch evaluation: no rule matches
+        XCTAssertFalse(store.isTicking); XCTAssertEqual(applyCalls(), 0)
+        fake.set(bothDisplays); monitor.fire()
+        XCTAssertTrue(store.isTicking)
+        try await Task.sleep(nanoseconds: 300_000_000)
+        XCTAssertEqual(applyCalls(), 0)   // not before the settle interval
+        await eventually { self.applyCalls() == 1 && !store.isTicking }
+        XCTAssertEqual(applyCalls(), 1); XCTAssertEqual(store.status, "Automatically applied Wide"); XCTAssertFalse(store.isTicking)
+        XCTAssertEqual(posts.items, ["Automatically applied Wide"])
+    }
+    @MainActor func testBurstOfEventsIsOneEvaluation() async throws {
+        let backend = try backend(current: previous, steps: [1: target])
+        _ = try deskRule()
+        let fake = FakeDevices([bothDisplays[0]]), monitor = FakeMonitor()
+        let store = makeEventStore(backend, fake, monitor)
+        await eventually { !store.isTicking }
+        let before = fake.reads
+        fake.set(bothDisplays)
+        for i in 0..<20 { monitor.fire(i % 2 == 0 ? .usb : .displays) }
+        await eventually { self.applyCalls() == 1 && !store.isTicking }
+        XCTAssertEqual(applyCalls(), 1); XCTAssertEqual(posts.items.count, 1)
+        XCTAssertLessThanOrEqual(fake.reads - before, 4)   // 1 coalesced read + settle read + the post-apply consume (+1 slack), not one per event
+    }
+    @MainActor func testNoTimerRunsWhenIdleAndMonitorIsReleasedWithTheStore() async throws {
+        let backend = try backend(current: previous)
+        let fake = FakeDevices(bothDisplays), monitor = FakeMonitor()
+        var store: Store? = makeEventStore(backend, fake, monitor)
+        await eventually { store?.isTicking == false }
+        XCTAssertFalse(store!.isTicking)
+        let reads = fake.reads
+        try await Task.sleep(nanoseconds: 1_500_000_000)
+        XCTAssertEqual(fake.reads, reads)   // idle: no polling at all
+        XCTAssertFalse(monitor.stopped)
+        store = nil
+        XCTAssertTrue(monitor.stopped)
+    }
+    @MainActor func testCountdownAndRecoveryResultRunOnTheTimerThenStop() async throws {
+        let backend = try backend(current: previous, steps: [1: target, 2: previous])
+        let preset = Preset(name: "Wide", displays: target)
+        try save(presets: [preset])
+        let monitor = FakeMonitor()
+        let store = makeEventStore(backend, FakeDevices([]), monitor)
+        await eventually { !store.isTicking }
+        await store.apply(preset)
+        XCTAssertNotNil(store.pending); XCTAssertTrue(store.isTicking)
+        await eventually { store.secondsRemaining < 20 }
+        XCTAssertLessThan(store.secondsRemaining, 20)   // countdown advanced with no manual tick
+        store.revert()
+        await eventually { !store.busy && !store.isTicking }
+        XCTAssertFalse(store.busy); XCTAssertFalse(store.isTicking)
+        XCTAssertTrue(try layoutMatches(backend, previous))
+        XCTAssertNotNil(RecoveryController(directory: data).result())
+    }
+    @MainActor func testWakeResetsTheGateSoRulesAreReevaluated() async throws {
+        let backend = try backend(current: previous, steps: [1: target])
+        _ = try deskRule()
+        let fake = FakeDevices(bothDisplays), monitor = FakeMonitor()
+        let store = makeEventStore(backend, fake, monitor, settle: 0.1)
+        await eventually { store.status == "Automatically applied Wide" && !store.isTicking }
+        XCTAssertEqual(store.status, "Automatically applied Wide")
+        monitor.fire(.usb)   // same devices: already consumed
+        await eventually { store.isTicking }; await eventually { !store.isTicking }
+        XCTAssertEqual(store.status, "Automatically applied Wide")
+        monitor.fire(.wake)
+        await eventually { store.status == "Wide is active" }
+        XCTAssertEqual(store.status, "Wide is active"); XCTAssertEqual(applyCalls(), 1)
+    }
 }

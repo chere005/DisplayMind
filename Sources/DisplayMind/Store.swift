@@ -10,12 +10,12 @@ import ServiceManagement
     @Published var busy = false
     @Published var error: String?
     @Published var status = "Reading connected displays…"
-    @Published var pending: PendingChange?
+    @Published var pending: PendingChange? { didSet { syncTimers() } }
     @Published var secondsRemaining = 20
     @Published var loginEnabled = SMAppService.mainApp.status == .enabled
     @Published var selectedPresetID: UUID?
     @Published var showRules = false
-    @Published var editorPreset: Preset?
+    @Published var editorPreset: Preset? { didSet { if editorPreset != nil { refreshAuthorization() } } }
     @Published var editorRule: ConnectionRule?
     @Published var airPlayReceivers: [AirPlayReceiver] = []
     @Published var airPlayScanning = false
@@ -33,22 +33,33 @@ import ServiceManagement
     /// How long a device set must stay unchanged before rules run.
     var settle: TimeInterval = 3
     var openWindow: (() -> Void)?
+    /// Safety net in case a change notification is missed.
+    static let fallbackInterval: TimeInterval = 60
+    /// Quiet time after the last change event before devices are first read, so dock bursts become one evaluation.
+    var coalesce: TimeInterval = 0.25
     private var gate = ConnectionGate()
-    private var timer: Timer?
+    private var ticker: Timer?, debounce: Timer?, fallback: Timer?
+    private var monitorToken: AnyObject?
+    private let scheduling: Bool
+    private var changeCount = 0
+    /// A change (or launch/rule edit) has not yet been evaluated; the settle window is open.
+    private var dirty = false { didSet { syncTimers() } }
     private var lastDevices: Set<String> = []
     private var polling = false
     private var writable = true
-    private var wakeObserver: NSObjectProtocol?
     private var applyFailure: String?
-    private var recoveryID: UUID?
+    private var recoveryID: UUID? { didSet { syncTimers() } }
+    /// True while a countdown, recovery wait, settle window or pending coalesced change needs timer wake-ups (the 60 s fallback does not count).
+    var isTicking: Bool { ticker != nil || debounce != nil }
 
     struct PendingChange { var journal: RecoveryJournal; var preset: Preset }
 
-    /// `background: false` skips the timer, wake observer and first refresh so tests can drive `refresh()` / `tick()` directly.
+    /// `background: false` skips the monitor, timers and first refresh so tests can drive `refresh()` / `tick()` directly; a `monitor` passed explicitly (a fake) turns the event-driven scheduling on.
     init(directory: URL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("DisplayMind"), demo: Bool = false,
          backend: DisplayBackend = DisplayBackend(), hardware: HardwareProvider = .live, airPlay: AirPlayActions = .live, notifier: Notifier = .live,
          launchWatchdog: @escaping (URL) throws -> Void = RecoveryController.launchWatchdog,
-         windowVisible: @escaping @MainActor () -> Bool = mainWindowVisible, background: Bool = true) {
+         windowVisible: @escaping @MainActor () -> Bool = mainWindowVisible, background: Bool = true, monitor: HardwareMonitor? = nil) {
+        scheduling = background || monitor != nil
         settingsFile = SettingsFile(directory: directory)
         recovery = RecoveryController(directory: directory)
         self.backend = backend; self.hardware = hardware; self.airPlay = airPlay
@@ -78,15 +89,42 @@ import ServiceManagement
             fail("A display recovery that ran while DisplayMind was closed failed. " + failure)
             recovery.acknowledge()
         }
-        guard background else { return }
-        wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
-            Task { @MainActor in self?.gate.reset() }
+        guard scheduling else { return }
+        monitorToken = (monitor ?? .live).start { [weak self] change in self?.hardwareChanged(change) }
+        fallback = Timer.scheduledTimer(withTimeInterval: Self.fallbackInterval, repeats: true) { [weak self] timer in
+            guard let self else { timer.invalidate(); return }
+            Task { @MainActor in self.changed() }
         }
-        timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
-            Task { @MainActor in await self?.tick() }
-        }
-        Task { await refresh(); await tick() }
+        dirty = true
+        if background { Task { await refresh(); await tick() } } else { changed() }
     }
+
+    private func hardwareChanged(_ change: HardwareChange) {
+        if change == .wake { gate.reset() }
+        changed()
+    }
+    /// Schedules one device evaluation after a quiet `coalesce` period; the settle window then runs on the 1 s ticker.
+    private func changed() {
+        changeCount += 1
+        dirty = true
+        debounce?.invalidate()
+        debounce = Timer.scheduledTimer(withTimeInterval: coalesce, repeats: false) { [weak self] _ in
+            Task { @MainActor in guard let self else { return }; self.debounce = nil; await self.tick(); self.syncTimers() }
+        }
+    }
+    /// The 1 s ticker runs only while a countdown, recovery wait or settle window is open.
+    private func syncTimers() {
+        guard scheduling else { return }
+        let needed = pending != nil || recoveryID != nil || (dirty && debounce == nil)
+        if needed && ticker == nil {
+            ticker = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] timer in
+                guard let self else { timer.invalidate(); return }
+                Task { @MainActor in await self.tick() }
+            }
+        } else if !needed { ticker?.invalidate(); ticker = nil }
+    }
+    /// Accessibility trust changes only in System Settings, so read it when the app is activated, an editor opens, or a related button is pressed.
+    func refreshAuthorization() { airPlayAuthorized = airPlay.authorized() }
 
     var connectedIDs: Set<String> { Set(displays.map(\.id)) }
     var selectedPreset: Preset? { settings.presets.first { $0.id == selectedPresetID } }
@@ -100,6 +138,7 @@ import ServiceManagement
     func fail(_ message: String) {
         if windowVisible() { error = message } else { menuError = message; notifier.post("DisplayMind", message) }
     }
+    private func rearm() { gate.reset(); if scheduling { changed() } }
     func dismissMenuError() { menuError = nil }
     func allowAirPlayControl() {
         airPlay.requestAccess()
@@ -163,7 +202,7 @@ import ServiceManagement
             preset.confirmed = preset.confirmed && preset.airPlay == nil && Configuration.matches(preset.displays, actual: displays.map(\.setting))
             updated.presets.append(preset)
         }
-        if persist(updated) { selectedPresetID = preset.id; showRules = false; editorPreset = nil; gate.reset() }
+        if persist(updated) { selectedPresetID = preset.id; showRules = false; editorPreset = nil; rearm() }
     }
     func duplicate(_ preset: Preset) {
         var copy = preset; copy.id = UUID(); copy.name += " copy"
@@ -173,7 +212,7 @@ import ServiceManagement
         var updated = settings
         updated.presets.removeAll { $0.id == preset.id }
         updated.rules.removeAll { $0.presetID == preset.id }
-        if persist(updated) { selectedPresetID = settings.presets.first?.id; gate.reset() }
+        if persist(updated) { selectedPresetID = settings.presets.first?.id; rearm() }
     }
     func saveRule(_ rule: ConnectionRule) {
         guard !rule.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
@@ -181,20 +220,20 @@ import ServiceManagement
               settings.presets.contains(where: { $0.id == rule.presetID }) else { fail("Choose a preset, a name, and at least one connection condition."); return }
         var updated = settings
         if let i = updated.rules.firstIndex(where: { $0.id == rule.id }) { updated.rules[i] = rule } else { updated.rules.append(rule) }
-        if persist(updated) { editorRule = nil; gate.reset() }
+        if persist(updated) { editorRule = nil; rearm() }
     }
     func deleteRule(_ rule: ConnectionRule) {
         var updated = settings; updated.rules.removeAll { $0.id == rule.id }
-        if persist(updated) { gate.reset() }
+        if persist(updated) { rearm() }
     }
     func moveRule(_ rule: ConnectionRule, by offset: Int) {
         guard let i = settings.rules.firstIndex(where: { $0.id == rule.id }), settings.rules.indices.contains(i + offset) else { return }
         var updated = settings; updated.rules.swapAt(i, i + offset)
-        if persist(updated) { gate.reset() }
+        if persist(updated) { rearm() }
     }
     func toggleAutomation(_ enabled: Bool) {
         var updated = settings; updated.automationEnabled = enabled
-        if persist(updated) { gate.reset() }
+        if persist(updated) { rearm() }
     }
     func setLogin(_ enabled: Bool) {
         do {
@@ -291,7 +330,8 @@ import ServiceManagement
         do { try recovery.requestRevert() } catch { busy = false; report(error) }
     }
     func tick() async {
-        airPlayAuthorized = airPlay.authorized()
+        let seen = changeCount
+        defer { syncTimers() }
         if let pending { secondsRemaining = max(0, Int(ceil(pending.journal.deadline.timeIntervalSinceNow))) }
         if let id = recoveryID, let result = recovery.result(), result.id == id {
             recoveryID = nil; pending = nil; busy = false
@@ -302,7 +342,7 @@ import ServiceManagement
             await refresh()
             gate.consume(hardware.devices(), now: Date())
         }
-        guard !polling, !busy, !airPlayScanning, pending == nil else { return }
+        guard !polling, !busy, !airPlayScanning, pending == nil else { return }   // dirty stays set, so the ticker retries
         polling = true
         defer { polling = false }
         let devicesNow = hardware.devices
@@ -314,7 +354,9 @@ import ServiceManagement
         }
         let ids = Set(devices.map(\.id))
         if ids != lastDevices { lastDevices = ids; await refresh() }
-        guard gate.shouldEvaluate(devices, now: Date(), settle: settle), writable,
+        let due = gate.shouldEvaluate(devices, now: Date(), settle: settle)
+        dirty = scheduling && (gate.isPending(devices) || changeCount != seen)
+        guard due, writable,
               let rule = RuleEngine.match(settings: settings, devices: devices),
               let preset = settings.presets.first(where: { $0.id == rule.presetID }) else { return }
         await apply(preset, automatic: true)

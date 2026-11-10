@@ -195,6 +195,8 @@ public struct ConnectionGate {
     public mutating func consume(_ devices: [Device], now: Date) {
         let ids = Set(devices.map(\.id)); candidate = ids; consumed = ids; since = now
     }
+    /// True while these devices have not yet been evaluated (or consumed), i.e. a settle window is still open.
+    public func isPending(_ devices: [Device]) -> Bool { consumed != Set(devices.map(\.id)) }
     public mutating func shouldEvaluate(_ devices: [Device], now: Date, settle: TimeInterval = 3) -> Bool {
         let ids = Set(devices.map(\.id))
         if candidate != ids { candidate = ids; since = now }

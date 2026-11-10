@@ -10,6 +10,15 @@ struct HardwareProvider {
     static let live = HardwareProvider(devices: { Hardware.devices() }, connectedDisplayIDs: { Hardware.connectedDisplayIDs() }, nameDisplays: { Hardware.nameDisplays($0) })
 }
 
+enum HardwareChange { case displays, usb, wake }
+
+/// Change notifications that replace idle polling. `start` registers and returns a token; releasing the token unregisters.
+struct HardwareMonitor {
+    var start: @MainActor (_ onChange: @escaping @MainActor (HardwareChange) -> Void) -> AnyObject?
+    static let none = HardwareMonitor { _ in nil }
+    static let live = HardwareMonitor { LiveHardwareMonitor(onChange: $0) }
+}
+
 struct AirPlayActions {
     var authorized: () -> Bool
     var requireAccess: () throws -> Void

@@ -18,7 +18,7 @@ A small native macOS app for display presets and connection-based defaults.
 
 Open DisplayMind and choose **Capture current**. Give the preset a name, adjust the layout, and save it. **Apply preset** offers a timed confirmation. Capturing an unchanged current layout also marks it ready for automatic rules.
 
-In **Connection rules**, choose a preset and mark each relevant display or USB device **Connected** or **Absent**. All conditions must match. The first eligible rule wins after connections settle for three seconds. Rules also run on launch and wake. A manually selected preset remains active until the next connection change, wake, or rule change. Automatic switching can be paused in the sidebar or menu bar.
+In **Connection rules**, choose a preset and mark each relevant display or USB device **Connected** or **Absent**. All conditions must match. The first eligible rule wins after connections settle for three seconds. DisplayMind does not poll: display, USB and wake notifications trigger a check (bursts are coalesced), a timer runs only during a Keep/Revert countdown, recovery wait or settle window, and a 60-second fallback re-check covers a missed notification. Rules also run on launch and wake. A manually selected preset remains active until the next connection change, wake, or rule change. Automatic switching can be paused in the sidebar or menu bar.
 
 [Layout editor](docs/preset-editor.png) · [Connection rules](docs/connection-rules.png) · [Rule editor](docs/rule-editor.png)
 

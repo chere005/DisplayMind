@@ -80,7 +80,11 @@ struct WindowContent: View {
     @Environment(\.openWindow) private var openWindow
     var body: some View {
         MainView(store: store)
-            .onAppear { store.openWindow = { openWindow(id: "main"); NSApplication.shared.activate(ignoringOtherApps: true) } }
+            .onAppear {
+                store.openWindow = { openWindow(id: "main"); NSApplication.shared.activate(ignoringOtherApps: true) }
+                store.refreshAuthorization()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in store.refreshAuthorization() }
             .onReceive(NotificationCenter.default.publisher(for: .openDisplayMind)) { _ in store.openWindow?() }
     }
 }
