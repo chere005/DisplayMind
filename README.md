@@ -40,7 +40,7 @@ DisplayMind recognises an AirPlay display from what macOS reports about it, and 
 
 ## Sound
 
-A preset saves the Mac's default sound output and input when captured; the editor's **Sound** section changes either, or leaves one on **Don't change**. Devices are matched by CoreAudio UID. Applying the preset sets them after the displays verify (output also becomes the alert-sound device). A saved device that is not connected is skipped and named in the status or notification; the layout stays. A sound error is reported without reverting the layout. Reverting, expiry and the watchdog put back the previous devices after the layout, best effort. Changing only the sound devices keeps a preset eligible for automatic rules.
+A preset saves the Mac's default sound output and input when captured; the editor's **Sound** section changes either, or leaves one on **Don't change**. Devices are matched by CoreAudio UID. Bluetooth headphones in use are never taken off: a side whose current device is Bluetooth is left alone when a preset is applied, and when that device disconnects the active preset's device takes over instead of whatever macOS falls back to. A device you choose yourself while the headphones stay connected is left alone. Applying the preset sets them after the displays verify (output also becomes the alert-sound device). A saved device that is not connected is skipped and named in the status or notification; the layout stays. A sound error is reported without reverting the layout. Reverting, expiry and the watchdog put back the previous devices after the layout, best effort. Changing only the sound devices keeps a preset eligible for automatic rules.
 
 ## Build
 

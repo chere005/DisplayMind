@@ -51,6 +51,13 @@ import ServiceManagement
     private var changeCount = 0
     /// A change (or launch/rule edit) has not yet been evaluated; the settle window is open.
     private var dirty = false { didSet { syncTimers() } }
+    /// The sound devices as last seen settled, to tell a Bluetooth device going away from the user choosing another device.
+    private var soundSeen = AudioSelection(), bluetoothSeen: Set<String> = []
+    private var soundToken: AnyObject?, soundDebounce: Timer?
+    /// A burst of CoreAudio changes (the default moves, then the device leaves the list) is read once, after this quiet time.
+    var soundSettle: TimeInterval = 1
+    /// The preset applied last; while its layout is the active one, its sound devices take over from Bluetooth.
+    private var lastAppliedID: UUID?
     private var lastDevices: Set<String> = []
     /// The displays were reconfigured since the layout was last read, so "active preset" may be out of date.
     private var layoutStale = false
@@ -113,6 +120,8 @@ import ServiceManagement
             failAtLaunch("The previous display layout was not restored. Open Display Settings to choose the layout you want.")
         }
         guard scheduling else { return }
+        noteSound()
+        soundToken = audio.watch { [weak self] in Task { @MainActor in self?.soundEvent() } }
         monitorToken = (monitor ?? .live).start { [weak self] change in self?.hardwareChanged(change) }
         fallback = Timer.scheduledTimer(withTimeInterval: Self.fallbackInterval, repeats: true) { [weak self] timer in
             guard let self else { timer.invalidate(); return }
@@ -205,13 +214,49 @@ import ServiceManagement
     func defaultRuleDevices(for preset: Preset) -> [Device] {
         devices.filter { $0.kind == .display && $0.id != "display:\(preset.airPlay?.displayID ?? "")" }
     }
-    /// Sets the preset's sound devices. A CoreAudio error is reported but never reverts the layout; returns a note naming saved devices that are not connected.
+    private func noteSound() { soundSeen = audio.current(); bluetoothSeen = audio.bluetooth() }
+    private func soundEvent() {
+        soundDebounce?.invalidate()
+        soundDebounce = Timer.scheduledTimer(withTimeInterval: soundSettle, repeats: false) { [weak self] _ in
+            Task { @MainActor in guard let self else { return }; self.soundDebounce = nil; await self.soundChanged() }
+        }
+    }
+    /// The preset whose sound devices apply now: the one applied last while its layout is still the active one, else any preset with that layout.
+    private var soundPreset: Preset? {
+        settings.presets.first { $0.id == lastAppliedID && $0.audio != nil && isActive($0) } ?? settings.presets.first { $0.audio != nil && isActive($0) }
+    }
+    /// The sound devices changed. If the Bluetooth device that was the default has gone, the active preset's device takes over
+    /// instead of whatever macOS fell back to. Any other change is the user's and is only noted.
+    func soundChanged() async {
+        let audio = self.audio
+        let (now, bluetooth, connected) = await Task.detached { (audio.current(), audio.bluetooth(), Set((audio.outputs() + audio.inputs()).map(\.uid))) }.value
+        let previous = soundSeen, previousBluetooth = bluetoothSeen
+        soundSeen = now; bluetoothSeen = bluetooth
+        guard !busy, let preset = soundPreset, let wanted = preset.audio else { return }
+        let takeover = AudioPolicy.takeover(wanted, previous: previous, previousBluetooth: previousBluetooth, connected: connected)
+        guard !takeover.isEmpty, takeover.differs(from: now) else { return }
+        do {
+            let missing = try await Task.detached { try audio.set(takeover) }.value
+            noteSound()
+            let moved = [takeover.output, takeover.input].compactMap { $0 }.filter { !missing.contains($0.name) }.map(\.name)
+            if !moved.isEmpty, pending == nil { status = "Bluetooth disconnected: sound moved to " + moved.joined(separator: " and ") + " (\(preset.name))" }
+        } catch { fail(error.localizedDescription) }
+    }
+    /// Sets the preset's sound devices. A side on Bluetooth headphones stays with them; the preset's device takes over when they disconnect.
+    /// A CoreAudio error is reported but never reverts the layout; returns a note about devices left alone or not connected.
     private func applySound(_ preset: Preset) async -> String? {
-        guard let wanted = preset.audio, !wanted.isEmpty else { return nil }
+        guard let saved = preset.audio, !saved.isEmpty else { return nil }
         let audio = self.audio
         do {
-            let missing = try await Task.detached { try audio.set(wanted) }.value
-            return missing.isEmpty ? nil : "Sound device not connected: " + missing.joined(separator: ", ") + "."
+            let (missing, kept) = try await Task.detached { () -> ([String], [AudioDevice]) in
+                let plan = AudioPolicy.applicable(saved, current: audio.current(), bluetooth: audio.bluetooth())
+                return (plan.set.isEmpty ? [] : try audio.set(plan.set), plan.kept)
+            }.value
+            noteSound()
+            var notes: [String] = []
+            if !kept.isEmpty { notes.append("Sound stays on " + Array(Set(kept.map(\.name))).sorted().joined(separator: ", ") + " while it is connected.") }
+            if !missing.isEmpty { notes.append("Sound device not connected: " + missing.joined(separator: ", ") + ".") }
+            return notes.isEmpty ? nil : notes.joined(separator: " ")
         } catch { fail(error.localizedDescription); return nil }
     }
     private func persist(_ updated: AppSettings) -> Bool {
@@ -369,6 +414,7 @@ import ServiceManagement
         do {
             let backend = self.backend, hardware = self.hardware, airPlay = self.airPlay
             try Configuration.validate(preset)
+            lastAppliedID = preset.id
             let soundBefore = audio.current()
             let current = try await Task.detached { try backend.read() }.value
             let cast = hardware.airPlayDisplays()
@@ -475,6 +521,8 @@ import ServiceManagement
         }
         if let id = recoveryID, let result = recovery.result(), result.id == id {
             recoveryID = nil; pending = nil; busy = false
+            lastAppliedID = nil   // the preset did not stay
+            noteSound()
             status = result.error == nil ? "Previous layout restored" : Self.attention
             if let failure = result.error { recoveryUnacknowledged = true; fail(failure) }
             else if let failure = applyFailure { fail(failure + " The previous layout was restored.") }

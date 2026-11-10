@@ -11,7 +11,13 @@ final class FakeAudio: @unchecked Sendable {
     var now = AudioSelection(output: speakers, input: mic)
     var sets: [AudioSelection] = []
     var failure: String?
+    var bluetooth: Set<String> = []
     var actions: AudioActions {
+        var actions = base
+        actions.bluetooth = { self.lock.lock(); defer { self.lock.unlock() }; return self.bluetooth }
+        return actions
+    }
+    private var base: AudioActions {
         AudioActions(outputs: { self.outputs }, inputs: { self.inputs }, current: { self.lock.lock(); defer { self.lock.unlock() }; return self.now }, set: { wanted in
             self.lock.lock(); defer { self.lock.unlock() }
             self.sets.append(wanted)
@@ -580,5 +586,66 @@ final class StoreTests: XCTestCase {
         XCTAssertFalse(store.busy); XCTAssertFalse(journalExists())
         await store.refresh()
         XCTAssertTrue(try layoutMatches(backend, target)); XCTAssertEqual(applyCalls(), 0)
+    }
+    // MARK: Bluetooth headphones
+
+    let headphones = AudioDevice(uid: "bt-headphones", name: "AirPods Pro")
+    func wearHeadphones() { sound.outputs.append(headphones); sound.bluetooth = [headphones.uid]; sound.now.output = headphones }
+    /// What macOS does when they disconnect: the device leaves the list and the default falls to something of its own choosing.
+    func headphonesDisconnect(fallingBackTo fallback: AudioDevice) { sound.outputs.removeAll { $0 == headphones }; sound.bluetooth = []; sound.now.output = fallback }
+
+    @MainActor func testBluetoothHeadphonesInUseAreLeftAloneWhenAPresetIsApplied() async throws {
+        wearHeadphones()
+        let backend = try backend(current: previous, steps: [1: target])
+        let preset = Preset(name: "Wide", displays: target, audio: AudioSelection(output: speakers, input: mic))
+        try save(presets: [preset])
+        let store = makeStore(backend)
+        await store.apply(preset)
+        XCTAssertEqual(sound.now.output, headphones, "the output stays on the headphones")
+        XCTAssertTrue(sound.sets.allSatisfy { $0.output == nil }, "no call moved the output")
+        XCTAssertTrue(store.status.contains("Sound stays on AirPods Pro"))
+        XCTAssertNotNil(store.pending)
+    }
+    @MainActor func testThePresetsDeviceTakesOverWhenTheHeadphonesDisconnect() async throws {
+        wearHeadphones()
+        let backend = try backend(current: previous, steps: [1: target])
+        let preset = Preset(name: "Wide", displays: target, audio: AudioSelection(output: speakers))
+        try save(presets: [preset])
+        let store = makeStore(backend)
+        await store.apply(preset)
+        store.keep()
+        await store.refresh()
+        headphonesDisconnect(fallingBackTo: tvSound)
+        await store.soundChanged()
+        XCTAssertEqual(sound.now.output, speakers, "not the device macOS fell back to")
+        XCTAssertTrue(store.status.contains("sound moved to Speakers"))
+        // Nothing more happens on later changes: the headphones are no longer the device that went away.
+        let calls = sound.sets.count
+        sound.now.output = tvSound
+        await store.soundChanged()
+        XCTAssertEqual(sound.now.output, tvSound); XCTAssertEqual(sound.sets.count, calls)
+    }
+    @MainActor func testChoosingAnotherDeviceWhileTheHeadphonesStayConnectedIsLeftAlone() async throws {
+        wearHeadphones()
+        let backend = try backend(current: target)
+        let preset = Preset(name: "Wide", displays: target, confirmed: true, audio: AudioSelection(output: speakers))
+        try save(presets: [preset])
+        let store = makeStore(backend)
+        await store.refresh()
+        await store.soundChanged()                 // settles on the headphones
+        sound.now.output = tvSound                 // the user picks the TV in the menu bar; the headphones are still connected
+        await store.soundChanged()
+        XCTAssertEqual(sound.now.output, tvSound); XCTAssertTrue(sound.sets.isEmpty)
+    }
+    @MainActor func testWithNoActivePresetTheSystemsFallbackStands() async throws {
+        wearHeadphones()
+        let backend = try backend(current: previous)   // the displays show a layout no preset has
+        try save(presets: [Preset(name: "Wide", displays: target, confirmed: true, audio: AudioSelection(output: speakers))])
+        let store = makeStore(backend)
+        await store.refresh()
+        await store.soundChanged()
+        headphonesDisconnect(fallingBackTo: tvSound)
+        await store.soundChanged()
+        XCTAssertEqual(sound.now.output, tvSound); XCTAssertTrue(sound.sets.isEmpty)
     }
 }

@@ -21,7 +21,7 @@ enum Entry {
                     fputs("The display helper would change the current layout when re-applying it: \(plan.joined(separator: "; "))\n", stderr); exit(1)
                 }
                 let sound = SystemAudio.current()
-                print("DisplayMind: read-only diagnostics passed; \(displays.count) displays (\(displays.map(\.setting.name).joined(separator: ", "))); \(plan.filter { $0.hasPrefix("keep ") }.count) mirrors kept on re-apply; \(devices.filter { $0.kind == .usb }.count) USB devices; \(SystemAudio.devices(input: false).count) sound outputs (\(sound.output?.name ?? "none")); \(SystemAudio.devices(input: true).count) sound inputs (\(sound.input?.name ?? "none")); capture validated.")
+                print("DisplayMind: read-only diagnostics passed; \(displays.count) displays (\(displays.map(\.setting.name).joined(separator: ", "))); \(plan.filter { $0.hasPrefix("keep ") }.count) mirrors kept on re-apply; \(devices.filter { $0.kind == .usb }.count) USB devices; \(SystemAudio.devices(input: false).count) sound outputs (\(sound.output?.name ?? "none")); \(SystemAudio.devices(input: true).count) sound inputs (\(sound.input?.name ?? "none")); \(SystemAudio.bluetoothUIDs().count) Bluetooth sound devices; capture validated.")
                 exit(0)
             } catch { fputs("\(error.localizedDescription)\n", stderr); exit(1) }
         }

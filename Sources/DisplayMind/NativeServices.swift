@@ -149,6 +149,25 @@ enum Hardware {
 }
 
 /// CoreAudio default-device access. Devices are identified by UID; the system-wide defaults are only ever written by `set`.
+/// Listens for the sound device list or a default device changing. Releasing it removes the listeners.
+final class SoundWatcher {
+    private let queue = DispatchQueue(label: "DisplayMind.sound")
+    private var registered: [(AudioObjectPropertyAddress, AudioObjectPropertyListenerBlock)] = []
+    init(_ changed: @escaping @Sendable () -> Void) {
+        for selector in [kAudioHardwarePropertyDevices, kAudioHardwarePropertyDefaultOutputDevice, kAudioHardwarePropertyDefaultInputDevice] {
+            var address = AudioObjectPropertyAddress(mSelector: selector, mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
+            let block: AudioObjectPropertyListenerBlock = { _, _ in changed() }
+            if AudioObjectAddPropertyListenerBlock(AudioObjectID(kAudioObjectSystemObject), &address, queue, block) == noErr { registered.append((address, block)) }
+        }
+    }
+    deinit {
+        for (address, block) in registered {
+            var address = address
+            AudioObjectRemovePropertyListenerBlock(AudioObjectID(kAudioObjectSystemObject), &address, queue, block)
+        }
+    }
+}
+
 enum SystemAudio {
     private static let system = AudioObjectID(kAudioObjectSystemObject)
     private static func address(_ selector: AudioObjectPropertySelector, _ scope: AudioObjectPropertyScope = kAudioObjectPropertyScopeGlobal) -> AudioObjectPropertyAddress {
@@ -182,6 +201,13 @@ enum SystemAudio {
         allDevices().filter { hasStreams($0, input: input) && !hidden($0) }.compactMap { id in describe(id).map { (id, $0) } }
     }
     static func devices(input: Bool) -> [AudioDevice] { connected(input: input).map(\.device) }
+    static func bluetoothUIDs() -> Set<String> {
+        Set(allDevices().filter { id in
+            var a = address(kAudioDevicePropertyTransportType); var size = UInt32(MemoryLayout<UInt32>.size); var transport: UInt32 = 0
+            guard AudioObjectGetPropertyData(id, &a, 0, nil, &size, &transport) == noErr else { return false }
+            return transport == kAudioDeviceTransportTypeBluetooth || transport == kAudioDeviceTransportTypeBluetoothLE
+        }.compactMap { string($0, kAudioDevicePropertyDeviceUID) })
+    }
     private static func defaultID(_ selector: AudioObjectPropertySelector) -> AudioDeviceID? {
         var a = address(selector); var size = UInt32(MemoryLayout<AudioDeviceID>.size); var id = AudioDeviceID(kAudioObjectUnknown)
         guard AudioObjectGetPropertyData(system, &a, 0, nil, &size, &id) == noErr, id != kAudioObjectUnknown else { return nil }

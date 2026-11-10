@@ -40,8 +40,13 @@ struct AudioActions {
     var inputs: @Sendable () -> [AudioDevice]
     var current: @Sendable () -> AudioSelection
     var set: @Sendable (AudioSelection) throws -> [String]
+    /// UIDs of the connected sound devices that are Bluetooth.
+    var bluetooth: @Sendable () -> Set<String> = { [] }
+    /// Calls back when the device list or a default device changes; releasing the returned token stops it.
+    var watch: @Sendable (@escaping @Sendable () -> Void) -> AnyObject? = { _ in nil }
     static let live = AudioActions(outputs: { SystemAudio.devices(input: false) }, inputs: { SystemAudio.devices(input: true) },
-                                   current: { SystemAudio.current() }, set: { try SystemAudio.set($0) })
+                                   current: { SystemAudio.current() }, set: { try SystemAudio.set($0) },
+                                   bluetooth: { SystemAudio.bluetoothUIDs() }, watch: { SoundWatcher($0) })
     /// Preview mode: fixed device lists, never touches the system.
     static let demo = AudioActions(outputs: { [AudioDevice(uid: "demo-speakers", name: "MacBook Pro Speakers"), AudioDevice(uid: "demo-display", name: "Studio Display Speakers")] },
                                    inputs: { [AudioDevice(uid: "demo-mic", name: "MacBook Pro Microphone")] },

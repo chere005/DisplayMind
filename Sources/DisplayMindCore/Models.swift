@@ -44,6 +44,24 @@ public struct ConnectedDisplay: Identifiable, Equatable {
     }
 }
 
+/// How a preset's sound devices give way to Bluetooth headphones and take over again when they go.
+public enum AudioPolicy {
+    /// What a preset may set right now. A side whose current default is a Bluetooth device stays with it:
+    /// moving the output away from headphones in use drops their connection.
+    public static func applicable(_ wanted: AudioSelection, current: AudioSelection, bluetooth: Set<String>) -> (set: AudioSelection, kept: [AudioDevice]) {
+        var set = wanted, kept: [AudioDevice] = []
+        if let now = current.output, bluetooth.contains(now.uid), let want = wanted.output, want.uid != now.uid { set.output = nil; kept.append(now) }
+        if let now = current.input, bluetooth.contains(now.uid), let want = wanted.input, want.uid != now.uid { set.input = nil; kept.append(now) }
+        return (set, kept)
+    }
+    /// The sides the preset takes over because the Bluetooth device that was the default has gone.
+    /// A default the user changed while that device is still connected is their choice and is left alone.
+    public static func takeover(_ wanted: AudioSelection, previous: AudioSelection, previousBluetooth: Set<String>, connected: Set<String>) -> AudioSelection {
+        func gone(_ device: AudioDevice?) -> Bool { device.map { previousBluetooth.contains($0.uid) && !connected.contains($0.uid) } ?? false }
+        return AudioSelection(output: gone(previous.output) ? wanted.output : nil, input: gone(previous.input) ? wanted.input : nil)
+    }
+}
+
 public struct AudioDevice: Codable, Equatable, Hashable {
     /// CoreAudio device UID (`kAudioDevicePropertyDeviceUID`); the numeric `AudioDeviceID` changes across connections.
     public var uid: String

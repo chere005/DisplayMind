@@ -123,4 +123,22 @@ final class ConfigurationTests: XCTestCase {
         for name in ["External display", "External display 2", "External display 12", "31-inch display"] { XCTAssertTrue(DisplayParser.isPlaceholder(name), name) }
         for name in ["Built-in display", "Wacom One 12", "External display two", "My External display 2", "31-inch display left", ""] { XCTAssertFalse(DisplayParser.isPlaceholder(name), name) }
     }
+    func testSoundPolicyLeavesBluetoothInUseAndTakesOverOnlyWhenItGoes() {
+        let speakers = AudioDevice(uid: "spk", name: "Speakers"), mic = AudioDevice(uid: "mic", name: "Mic")
+        let pods = AudioDevice(uid: "bt", name: "AirPods"), tv = AudioDevice(uid: "tv", name: "TV")
+        let wanted = AudioSelection(output: speakers, input: mic)
+        // Headphones are the output: only the input is set.
+        var plan = AudioPolicy.applicable(wanted, current: AudioSelection(output: pods, input: mic), bluetooth: ["bt"])
+        XCTAssertEqual(plan.set, AudioSelection(output: nil, input: mic)); XCTAssertEqual(plan.kept, [pods])
+        // Headphones are connected but not in use, or the preset names them itself: nothing is held back.
+        plan = AudioPolicy.applicable(wanted, current: AudioSelection(output: tv, input: mic), bluetooth: ["bt"])
+        XCTAssertEqual(plan.set, wanted); XCTAssertTrue(plan.kept.isEmpty)
+        plan = AudioPolicy.applicable(AudioSelection(output: pods), current: AudioSelection(output: pods), bluetooth: ["bt"])
+        XCTAssertEqual(plan.set, AudioSelection(output: pods)); XCTAssertTrue(plan.kept.isEmpty)
+        // They were the default and have gone: the preset's output takes over, the input was never theirs.
+        XCTAssertEqual(AudioPolicy.takeover(wanted, previous: AudioSelection(output: pods, input: mic), previousBluetooth: ["bt"], connected: ["spk", "mic", "tv"]), AudioSelection(output: speakers))
+        // Still connected (the user chose another device), or the device that went was not Bluetooth: no takeover.
+        XCTAssertTrue(AudioPolicy.takeover(wanted, previous: AudioSelection(output: pods), previousBluetooth: ["bt"], connected: ["bt", "spk"]).isEmpty)
+        XCTAssertTrue(AudioPolicy.takeover(wanted, previous: AudioSelection(output: tv), previousBluetooth: [], connected: ["spk"]).isEmpty)
+    }
 }

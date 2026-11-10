@@ -243,7 +243,7 @@ struct PresetEditor: View {
                     soundPicker("Sound input", connected: inputs, saved: draft.audio?.input) { device in setSound { $0.input = device } }
                 }
             }
-            note("Set after the displays are arranged. A device that is not connected is skipped.")
+            note("Set after the displays are arranged. Bluetooth headphones in use are left alone, and the device chosen here takes over when they disconnect. A device that is not connected is skipped.")
         }
     }
 
