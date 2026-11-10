@@ -8,7 +8,7 @@ import DisplayMindCore
 ///     DisplayMind --render-preview out.png [--dark] [--size 1080x760] [--scale 2] [--show [--light]]
 ///         [--rules | --editor | --rule-editor] [--settings copy.json] [--select N] [--display N]
 ///         [--airplay] [--airplay-allowed] [--receivers] [--pending] [--empty] [--busy] [--unavailable] [--unconfirmed]
-///         [--paused] [--long] [--many] [--no-sound] [--no-rules] [--invalid]
+///         [--paused] [--long] [--many] [--no-sound] [--no-rules] [--invalid] [--renaming]
 @MainActor enum Preview {
     static func run(_ args: [String], output: String) -> Never {
         func has(_ flag: String) -> Bool { args.contains(flag) }
@@ -76,14 +76,14 @@ import DisplayMindCore
             content = AnyView(PresetEditor(store: store, original: draft, selected: draft.displays[display].id, validate: has("--invalid")))
         } else if has("--rule-editor"), let rule = store.settings.rules.first ?? store.settings.presets.first.map({ ConnectionRule(name: "Use \($0.name)", presetID: $0.id, requiredDevices: []) }) {
             content = AnyView(RuleEditor(store: store, original: rule))
-        } else { content = AnyView(MainView(store: store)) }
+        } else { content = AnyView(MainView(store: store, renaming: has("--renaming") ? store.selectedPresetID : nil)) }
         if has("--show") {
             // A real key window with the same synthetic store, for looking at live controls, menus and sheets.
             app.setActivationPolicy(.regular)
             let shown = NSWindow(contentRect: NSRect(origin: .zero, size: size), styleMask: [.titled, .closable, .resizable, .miniaturizable], backing: .buffered, defer: false)
             shown.title = "DisplayMind Preview"
             shown.appearance = appearance
-            shown.contentView = NSHostingView(rootView: MainView(store: store))
+            shown.contentView = NSHostingView(rootView: MainView(store: store, renaming: has("--renaming") ? store.selectedPresetID : nil))
             shown.center()
             shown.makeKeyAndOrderFront(nil)
             app.activate(ignoringOtherApps: true)

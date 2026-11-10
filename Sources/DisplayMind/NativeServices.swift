@@ -39,6 +39,10 @@ struct DisplayBackend {
     init(helper: URL = Bundle.main.executableURL!.deletingLastPathComponent().appendingPathComponent("displayplacer")) { self.helper = helper }
     func read() throws -> [ConnectedDisplay] { try DisplayParser.parse(ProcessRunner.run(helper, arguments: ["list"])) }
     func apply(_ displays: [DisplaySetting]) throws { _ = try ProcessRunner.run(helper, arguments: Configuration.arguments(for: displays)) }
+    /// What an apply would do to mirroring and rotation (`keep`, `unset`, `set`, `rotate`, `missing`, or `unchanged`). Read-only.
+    func plan(_ displays: [DisplaySetting]) throws -> [String] {
+        try ProcessRunner.run(helper, arguments: ["plan"] + Configuration.arguments(for: displays)).split(separator: "\n").map(String.init)
+    }
     /// Apply until the layout verifies. One pass can leave a mirror set or a rotation unfinished while macOS is still
     /// reconfiguring (AirPlay mirrors after a rotation), and the helper may exit non-zero although a later pass succeeds.
     /// Only the verified result decides; the last helper error is reported if no attempt verifies.
@@ -100,6 +104,8 @@ enum Hardware {
         }
     }
 
+    /// macOS names only the screens it draws to. A mirror has no NSScreen, so its name comes from CoreDisplay's info dictionary
+    /// (the EDID or receiver name); failing that it keeps the parser's placeholder.
     @MainActor static func nameDisplays(_ displays: [ConnectedDisplay]) -> [ConnectedDisplay] {
         let names = Dictionary(NSScreen.screens.compactMap { screen -> (UInt32, String)? in
             guard let id = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? UInt32 else { return nil }
@@ -107,9 +113,23 @@ enum Hardware {
         }, uniquingKeysWith: { a, _ in a })
         return displays.map { display in
             var copy = display
-            if let name = names[display.contextualID] { copy.setting.name = name }
+            if let name = names[display.contextualID] ?? (display.builtIn ? nil : productName(display.contextualID)) { copy.setting.name = name }
             return copy
         }
+    }
+    private typealias DisplayInfo = @convention(c) (CGDirectDisplayID) -> Unmanaged<CFDictionary>?
+    /// Looked up at run time: the function is not in the public headers, and a macOS without it only loses the nicer name.
+    private static let displayInfo: DisplayInfo? = {
+        guard let handle = dlopen("/System/Library/Frameworks/CoreDisplay.framework/CoreDisplay", RTLD_LAZY),
+              let symbol = dlsym(handle, "CoreDisplay_DisplayCreateInfoDictionary") else { return nil }
+        return unsafeBitCast(symbol, to: DisplayInfo.self)
+    }()
+    static func productName(_ id: CGDirectDisplayID) -> String? {
+        guard id != 0, let info = displayInfo?(id)?.takeRetainedValue() as? [String: Any],
+              let names = info["DisplayProductName"] as? [String: String], !names.isEmpty else { return nil }
+        let wanted = Locale.preferredLanguages.map { $0.replacingOccurrences(of: "-", with: "_") } + ["en_US", "en"]
+        let name = (wanted.lazy.compactMap { names[$0] }.first ?? names.sorted { $0.key < $1.key }.first?.value)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return name.flatMap { $0.isEmpty ? nil : $0 }
     }
 }
 

@@ -213,6 +213,7 @@ import ServiceManagement
             let backend = self.backend
             let current = try await Task.detached { try backend.read() }.value
             displays = hardware.nameDisplays(current)
+            adoptDisplayNames()
             if pending == nil && !busy && !recoveryUnacknowledged { status = idleStatus }
         } catch { report(error) }
     }
@@ -248,6 +249,39 @@ import ServiceManagement
             updated.presets.append(preset)
         }
         if persist(updated) { selectedPresetID = preset.id; showRules = false; editorPreset = nil; rearm() }
+    }
+    /// A new name never touches the layout, so the preset keeps its confirmation and its rules.
+    @discardableResult func rename(_ preset: Preset, to name: String) -> Bool {
+        let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty, let i = settings.presets.firstIndex(where: { $0.id == preset.id }) else { return false }
+        guard settings.presets[i].name != name else { return true }
+        var updated = settings
+        updated.presets[i].name = name
+        guard persist(updated) else { return false }
+        if pending == nil && !busy && !recoveryUnacknowledged { status = idleStatus }
+        return true
+    }
+    /// A preset captured while macOS had no name for a display (a mirror) holds a placeholder such as "External display 2".
+    /// Once the display reports its real name, the presets and rules that mention it take that name.
+    private func adoptDisplayNames() {
+        let real = Dictionary(displays.filter { !DisplayParser.isPlaceholder($0.setting.name) }.map { ($0.id, $0.setting.name) }, uniquingKeysWith: { first, _ in first })
+        guard writable, !real.isEmpty else { return }
+        var updated = settings
+        for p in updated.presets.indices {
+            for d in updated.presets[p].displays.indices {
+                let display = updated.presets[p].displays[d]
+                if DisplayParser.isPlaceholder(display.name), let name = real[display.id] { updated.presets[p].displays[d].name = name }
+            }
+        }
+        func named(_ device: Device) -> Device {
+            guard device.kind == .display, DisplayParser.isPlaceholder(device.name), let name = real[String(device.id.dropFirst("display:".count))] else { return device }
+            return Device(id: device.id, name: name, kind: device.kind)
+        }
+        for r in updated.rules.indices {
+            updated.rules[r].requiredDevices = updated.rules[r].requiredDevices.map(named)
+            updated.rules[r].absentDevices = updated.rules[r].absentDevices.map(named)
+        }
+        if updated != settings { _ = persist(updated) }
     }
     func duplicate(_ preset: Preset) {
         var copy = preset; copy.id = UUID(); copy.name += " copy"
@@ -334,7 +368,7 @@ import ServiceManagement
                     try backend.applyVerified(preset.displays, rejected: "macOS did not accept every setting in this preset.")
                 }.value
             }
-            displays = Hardware.nameDisplays(actual)
+            displays = hardware.nameDisplays(actual)
             let note = await applySound(preset)
             if automatic {
                 try recovery.keep(id: journal.id)

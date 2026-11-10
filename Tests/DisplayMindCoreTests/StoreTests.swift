@@ -520,4 +520,35 @@ final class StoreTests: XCTestCase {
         await eventually { store.status == "Wide is active" }
         XCTAssertEqual(store.status, "Wide is active"); XCTAssertEqual(applyCalls(), 1)
     }
+    @MainActor func testRenamingAPresetKeepsItsConfirmationAndItsRules() throws {
+        let preset = Preset(name: "Desk", displays: layout(), confirmed: true)
+        let rule = ConnectionRule(name: "Dock", presetID: preset.id, requiredDevices: [Device(id: "usb:dock", name: "Dock", kind: .usb)])
+        try save(presets: [preset], rules: [rule])
+        let store = makeStore(try backend(current: layout()))
+        XCTAssertTrue(store.rename(preset, to: "  Standing desk  "))
+        XCTAssertEqual(store.settings.presets[0].name, "Standing desk")
+        XCTAssertTrue(store.settings.presets[0].confirmed)
+        XCTAssertEqual(store.settings.rules.map(\.presetID), [preset.id])
+        XCTAssertEqual(try SettingsFile(directory: data).load().presets[0].name, "Standing desk")
+        XCTAssertFalse(store.rename(preset, to: "   "), "an empty name is refused")
+        XCTAssertEqual(store.settings.presets[0].name, "Standing desk")
+        XCTAssertEqual(applyCalls(), 0)
+    }
+    @MainActor func testPlaceholderDisplayNamesGiveWayToTheRealNameOnceItIsKnown() async throws {
+        // A mirror had no name when the preset was captured; a name the user typed is never replaced.
+        var saved = layout(); saved[0].name = "My laptop"; saved[1].name = "External display 2"
+        let preset = Preset(name: "Desk", displays: saved, confirmed: true)
+        let rule = ConnectionRule(name: "TV", presetID: preset.id, requiredDevices: [Device(id: "display:\(displayB)", name: "External display", kind: .display)])
+        try save(presets: [preset], rules: [rule])
+        let hardware = HardwareProvider(devices: { [] }, connectedDisplayIDs: { [] }, nameDisplays: { displays in
+            displays.map { var copy = $0; copy.setting.name = $0.id == displayB ? "Living Room TV" : "Built-in Retina Display"; return copy }
+        })
+        let store = Store(directory: data, backend: try backend(current: layout()), hardware: hardware, audio: sound.actions, notifier: .none,
+                          launchWatchdog: { _ in }, windowVisible: { false }, background: false)
+        await store.refresh()
+        XCTAssertEqual(store.settings.presets[0].displays.map(\.name), ["My laptop", "Living Room TV"])
+        XCTAssertTrue(store.settings.presets[0].confirmed)
+        XCTAssertEqual(store.settings.rules[0].requiredDevices.map(\.name), ["Living Room TV"])
+        XCTAssertEqual(try SettingsFile(directory: data).load().presets[0].displays[1].name, "Living Room TV")
+    }
 }

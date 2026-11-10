@@ -28,6 +28,13 @@ int main(int argc, char* argv[]) {
         return 0;
     }
 
+    //DisplayMind: `plan <profile...>` prints what an apply would do to mirroring and rotation, and changes nothing.
+    bool planOnly = argc > 2 && strcmp(argv[1], "plan") == 0;
+    if (planOnly) {
+        argv++;
+        argc--;
+    }
+
     ScreenConfig* screenConfigs = calloc(argc - 1, sizeof(ScreenConfig));
 
     for (int i = 0; i < argc - 1; i++) {
@@ -163,6 +170,12 @@ int main(int argc, char* argv[]) {
             CFStringGetCString(CFUUIDCreateString(kCFAllocatorDefault, CGDisplayCreateUUIDFromDisplayID(activeScreenList[0])), curScreenUUID, sizeof(curScreenUUID), kCFStringEncodingUTF8);
             strlcpy(screenConfigs[0].uuid, curScreenUUID, sizeof(screenConfigs[0].uuid));
         }
+    }
+
+    if (planOnly) {
+        printPlan(screenConfigs, argc, screenList, screenCount);
+        free(screenConfigs);
+        return 0;
     }
 
     bool isSuccess = true; //returns non-zero exit code on any errors but allows for completing remaining program execution
@@ -477,10 +490,76 @@ bool isScreenEnabled(CGDirectDisplayID screenId) {
     return CGDisplayIsActive(screenId) || CGDisplayIsInMirrorSet(screenId);
 }
 
+//DisplayMind: true when the screen is the secondary of a mirror set.
+bool isMirroring(CGDirectDisplayID screenId) {
+    return CGDisplayIsInMirrorSet(screenId) && CGDisplayMirrorsDisplay(screenId) != kCGNullDirectDisplay;
+}
+
+//DisplayMind: true when the screen already mirrors the display the profile wants it to mirror.
+bool isMirrorOf(CGDirectDisplayID mirrorScreenId, CGDirectDisplayID primaryScreenId) {
+    return primaryScreenId != kCGNullDirectDisplay && isMirroring(mirrorScreenId) && CGDisplayMirrorsDisplay(mirrorScreenId) == primaryScreenId;
+}
+
+//DisplayMind: read-only description of the mirroring and rotation steps an apply would take. Prints `unchanged` when there are none.
+void printPlan(ScreenConfig* screenConfigs, int argc, CGDirectDisplayID screenList[], CGDisplayCount screenCount) {
+    int steps = 0;
+
+    for (int i = 0; i < argc - 1; i++) {
+        CGDirectDisplayID primary = convertUUIDtoID(screenConfigs[i].uuid);
+        if (!validateScreenOnline(screenList, screenCount, primary, screenConfigs[i].uuid, true)) {
+            printf("missing %s\n", screenConfigs[i].uuid);
+            steps++;
+            continue;
+        }
+
+        if (!screenConfigs[i].enabled) {
+            continue;
+        }
+
+        if (isMirroring(primary)) {
+            printf("unset %s\n", screenConfigs[i].uuid);
+            steps++;
+        }
+        if (CGDisplayRotation(primary) != screenConfigs[i].degree) {
+            printf("rotate %s %i\n", screenConfigs[i].uuid, screenConfigs[i].degree);
+            steps++;
+        }
+
+        for (int j = 0; j < screenConfigs[i].mirrorCount; j++) {
+            CGDirectDisplayID mirror = convertUUIDtoID(screenConfigs[i].mirrorUUIDs[j]);
+            if (!validateScreenOnline(screenList, screenCount, mirror, screenConfigs[i].mirrorUUIDs[j], true)) {
+                printf("missing %s\n", screenConfigs[i].mirrorUUIDs[j]);
+                steps++;
+                continue;
+            }
+
+            if (isMirrorOf(mirror, primary)) {
+                printf("keep %s mirroring %s\n", screenConfigs[i].mirrorUUIDs[j], screenConfigs[i].uuid);
+            } else {
+                if (isMirroring(mirror)) {
+                    printf("unset %s\n", screenConfigs[i].mirrorUUIDs[j]);
+                }
+                printf("set %s mirroring %s\n", screenConfigs[i].mirrorUUIDs[j], screenConfigs[i].uuid);
+                steps++;
+            }
+            if (CGDisplayRotation(mirror) != screenConfigs[i].degree) {
+                printf("rotate %s %i\n", screenConfigs[i].mirrorUUIDs[j], screenConfigs[i].degree);
+                steps++;
+            }
+        }
+    }
+
+    if (steps == 0) {
+        printf("unchanged\n");
+    }
+}
+
+//DisplayMind: a mirror the profile keeps is not unset, so its stream never drops; nothing to unset means no reconfiguration at all.
 bool unsetMirrors(ScreenConfig* screenConfigs, int argc, CGDirectDisplayID screenList[], CGDisplayCount screenCount) {
     CGDisplayConfigRef configRef;
     CGBeginDisplayConfiguration(&configRef);
     bool isSuccess = true;
+    int changes = 0;
 
     for (int i = 0; i < argc - 1; i++) {
         screenConfigs[i].id = convertUUIDtoID(screenConfigs[i].uuid);
@@ -504,10 +583,25 @@ bool unsetMirrors(ScreenConfig* screenConfigs, int argc, CGDirectDisplayID scree
                 continue;
             }
 
+            if (isMirrorOf(screenConfigs[i].mirrors[j], screenConfigs[i].id)) {
+                continue; //already mirrors the display this profile wants
+            }
+            if (isMirroring(screenConfigs[i].mirrors[j])) {
+                changes++;
+            }
+
             isSuccess = unsetMirror(configRef, screenConfigs[i].mirrors[j], screenConfigs[i].mirrorUUIDs[j]) && isSuccess;
         }
 
+        if (isMirroring(screenConfigs[i].id)) {
+            changes++;
+        }
         isSuccess = unsetMirror(configRef, screenConfigs[i].id, screenConfigs[i].uuid) && isSuccess;
+    }
+
+    if (changes == 0) {
+        CGCancelDisplayConfiguration(configRef);
+        return isSuccess;
     }
 
     if (CGCompleteDisplayConfiguration(configRef, kCGConfigurePermanently)) {
@@ -642,6 +736,10 @@ bool setMirrors(ScreenConfig* screenConfigs, int argc, CGDisplayConfigRef config
                     isSuccess = false;
                 }
                 continue;
+            }
+
+            if (isMirrorOf(screenConfigs[i].mirrors[j], screenConfigs[i].id)) {
+                continue; //DisplayMind: kept by unsetMirrors
             }
 
             isSuccess = setMirror(configRef, screenConfigs[i].id, screenConfigs[i].uuid, screenConfigs[i].mirrors[j], screenConfigs[i].mirrorUUIDs[j]) && isSuccess;

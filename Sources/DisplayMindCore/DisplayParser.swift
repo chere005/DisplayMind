@@ -10,6 +10,11 @@ public enum DisplayParser {
     }
     private static func first(_ pattern: String, _ input: String) -> String? { captures(pattern, input).first?.first }
 
+    /// A name this app made up because macOS reported none ("External display 2", "31-inch display"); a real name replaces it when one is known.
+    public static func isPlaceholder(_ name: String) -> Bool {
+        name.range(of: "^(External display( \\d+)?|\\d+-inch display)$", options: .regularExpression) != nil
+    }
+
     public static func parse(_ output: String) throws -> [ConnectedDisplay] {
         let blocks = output.components(separatedBy: "Persistent screen id: ").dropFirst()
         var displays: [ConnectedDisplay] = []

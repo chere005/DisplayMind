@@ -119,4 +119,8 @@ final class ConfigurationTests: XCTestCase {
         XCTAssertFalse(Configuration.matches(d, actual: partial))
         XCTAssertFalse(Configuration.matches(d, actual: [d[0]]))
     }
+    func testPlaceholderNamesAreOnlyTheOnesThisAppMakesUp() {
+        for name in ["External display", "External display 2", "External display 12", "31-inch display"] { XCTAssertTrue(DisplayParser.isPlaceholder(name), name) }
+        for name in ["Built-in display", "Wacom One 12", "External display two", "My External display 2", "31-inch display left", ""] { XCTAssertFalse(DisplayParser.isPlaceholder(name), name) }
+    }
 }

@@ -60,7 +60,17 @@ struct MainView: View {
     @ObservedObject var store: Store
     @State private var deletingPreset: Preset?
     @State private var deletingRule: ConnectionRule?
+    /// The preset whose name is being edited in place in the sidebar.
+    @State private var renamingID: UUID?
+    @State private var renameText: String
+    @FocusState private var renameFocused: Bool
     private var locked: Bool { store.busy || store.pending != nil }
+    /// `renaming` opens with that preset's name already being edited (previews).
+    init(store: Store, renaming: UUID? = nil) {
+        self.store = store
+        _renamingID = State(initialValue: renaming)
+        _renameText = State(initialValue: store.settings.presets.first { $0.id == renaming }?.name ?? "")
+    }
 
     var body: some View {
         HStack(spacing: 0) {
@@ -107,15 +117,21 @@ struct MainView: View {
                 Text("DisplayMind").font(.system(size: 17, weight: .semibold, design: .rounded))
             }.padding(.horizontal, 20).padding(.top, 26).padding(.bottom, 20)
             SectionLabel("Presets").padding(.horizontal, 20).padding(.bottom, 8)
+            ScrollViewReader { proxy in
             ScrollView {
                 VStack(spacing: 2) {
-                    ForEach(store.settings.presets) { presetRow($0) }
+                    ForEach(store.settings.presets) { preset in
+                        Group { if renamingID == preset.id { renameRow(preset) } else { presetRow(preset) } }.id(preset.id)
+                    }
                     if store.settings.presets.isEmpty {
                         Text("No presets yet. Capture your current layout to make the first one.")
                             .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                             .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 10).padding(.vertical, 6)
                     }
                 }.padding(.horizontal, 10)
+            }
+            .onChange(of: renamingID) { id in if let id { proxy.scrollTo(id, anchor: .center) } }
+            .onChange(of: renameFocused) { focused in if !focused { commitRename() } }   // clicking elsewhere keeps the typed name
             }
             Button { Task { await store.capture() } } label: {
                 Label("Capture current layout", systemImage: "plus.viewfinder").frame(maxWidth: .infinity)
@@ -142,6 +158,33 @@ struct MainView: View {
         }.background(Color.primary.opacity(0.03))
     }
 
+    private func beginRename(_ preset: Preset) {
+        guard !locked else { return }
+        renameText = preset.name
+        store.selectedPresetID = preset.id; store.showRules = false
+        renamingID = preset.id
+        DispatchQueue.main.async { renameFocused = true }
+    }
+    private func commitRename() {
+        guard let id = renamingID else { return }
+        renamingID = nil
+        if let preset = store.settings.presets.first(where: { $0.id == id }) { store.rename(preset, to: renameText) }
+    }
+    private func cancelRename() { renamingID = nil }
+
+    /// The sidebar row while its name is edited: Return or a click elsewhere keeps the name, Escape discards it.
+    private func renameRow(_ preset: Preset) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: preset.displays.count > 1 ? "display.2" : "display").frame(width: 24).foregroundStyle(Branding.text)
+            TextField("Preset name", text: $renameText).textFieldStyle(.roundedBorder).font(.system(size: 13, weight: .medium))
+                .focused($renameFocused)
+                .onSubmit { commitRename() }
+                .onExitCommand { cancelRename() }
+                .accessibilityLabel("Preset name")
+        }.padding(.horizontal, 10).padding(.vertical, 8)
+            .background(Branding.selection, in: RoundedRectangle(cornerRadius: 8))
+    }
+
     private func presetRow(_ preset: Preset) -> some View {
         let selected = !store.showRules && store.selectedPresetID == preset.id
         return Button { store.selectedPresetID = preset.id; store.showRules = false } label: {
@@ -157,6 +200,8 @@ struct MainView: View {
             }.padding(.horizontal, 10).padding(.vertical, 8).contentShape(Rectangle())
                 .background(selected ? Branding.selection : .clear, in: RoundedRectangle(cornerRadius: 8))
         }.buttonStyle(.plain).help(preset.name)
+            .simultaneousGesture(TapGesture(count: 2).onEnded { beginRename(preset) })
+            .accessibilityAction(named: "Rename") { beginRename(preset) }
             .contextMenu {
                 Button("Apply") { Task { await store.apply(preset) } }.disabled(locked || store.unavailable(preset) != nil)
                 Button("Edit preset…") { store.editorPreset = preset }.disabled(locked)
@@ -215,6 +260,7 @@ struct MainView: View {
     }
 
     @ViewBuilder private func presetMenu(_ preset: Preset) -> some View {
+        Button("Rename") { beginRename(preset) }
         Button("Duplicate…") { store.duplicate(preset) }
         Button("Create connection rule…") { store.editorRule = rule(for: preset) }
         Divider()
