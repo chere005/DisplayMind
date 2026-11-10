@@ -194,3 +194,60 @@ public struct ConnectionGate {
         return true
     }
 }
+
+extension DisplayMode {
+    /// Picker order: width, height, refresh rate descending, then HiDPI first, depth descending, id as the final tie-break.
+    public static func pickerOrder(_ a: DisplayMode, _ b: DisplayMode) -> Bool {
+        if a.width != b.width { return a.width > b.width }
+        if a.height != b.height { return a.height > b.height }
+        if a.hertz != b.hertz { return a.hertz > b.hertz }
+        if a.scaled != b.scaled { return a.scaled }
+        if a.depth != b.depth { return a.depth > b.depth }
+        return a.id < b.id
+    }
+}
+
+extension Configuration {
+    private struct Box { var id: String; var x: Int; var y: Int; var w: Int; var h: Int }
+    private static func boxes(_ displays: [DisplaySetting]) -> [Box] {
+        displays.filter { $0.enabled && $0.mirrorOf == nil }.map { Box(id: $0.id, x: $0.x, y: $0.y, w: $0.mode.width, h: $0.mode.height) }
+    }
+    private static func overlaps(_ a: Box, _ b: Box) -> Bool { a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h }
+    private static func touches(_ a: Box, _ b: Box) -> Bool { a.x <= b.x + b.w && b.x <= a.x + a.w && a.y <= b.y + b.h && b.y <= a.y + a.h }
+
+    /// Editor-only check: macOS renormalises extended layouts with overlaps or gaps, which makes exact-position verification fail.
+    public static func arrangementIssue(_ displays: [DisplaySetting]) -> String? {
+        let b = boxes(displays)
+        guard b.count > 1 else { return nil }
+        let names = Dictionary(displays.map { ($0.id, $0.name) }, uniquingKeysWith: { a, _ in a })
+        for i in b.indices { for j in b.indices where j > i && overlaps(b[i], b[j]) {
+            return "\(names[b[i].id] ?? "A display") and \(names[b[j].id] ?? "another display") overlap. macOS would move them, so the preset would not stay as saved. Drag them apart or use Place beside…."
+        } }
+        var seen: Set<Int> = [0]; var queue = [0]
+        while let i = queue.popLast() { for j in b.indices where !seen.contains(j) && touches(b[i], b[j]) { seen.insert(j); queue.append(j) } }
+        guard seen.count < b.count else { return nil }
+        let lost = b.indices.filter { !seen.contains($0) }.map { names[b[$0].id] ?? "A display" }
+        return lost.joined(separator: ", ") + (lost.count == 1 ? " is" : " are") + " not touching the other displays. macOS closes gaps, so the preset would not stay as saved. Drag it against another display or use Place beside…."
+    }
+
+    /// Nearest position at which `id` shares an edge (or a corner) with another extended display without overlapping any.
+    /// The perpendicular coordinate stays as proposed, clamped so the edges still meet. Returns the proposal unchanged when the
+    /// display is not an enabled extended one or has no neighbour, and nil when no overlap-free touching position exists.
+    public static func snappedPosition(_ displays: [DisplaySetting], moving id: String, to proposed: (x: Int, y: Int)) -> (x: Int, y: Int)? {
+        let all = boxes(displays)
+        guard let me = all.first(where: { $0.id == id }) else { return proposed }
+        let others = all.filter { $0.id != id }
+        guard !others.isEmpty else { return proposed }
+        var best: (x: Int, y: Int)?; var bestD = Int.max
+        for o in others {
+            let cy = min(max(proposed.y, o.y - me.h), o.y + o.h), cx = min(max(proposed.x, o.x - me.w), o.x + o.w)
+            for c in [(o.x + o.w, cy), (o.x - me.w, cy), (cx, o.y - me.h), (cx, o.y + o.h)] {
+                let moved = Box(id: id, x: c.0, y: c.1, w: me.w, h: me.h)
+                if others.contains(where: { overlaps(moved, $0) }) { continue }
+                let d = (c.0 - proposed.x) * (c.0 - proposed.x) + (c.1 - proposed.y) * (c.1 - proposed.y)
+                if d < bestD { bestD = d; best = (c.0, c.1) }
+            }
+        }
+        return best
+    }
+}

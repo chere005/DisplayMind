@@ -25,7 +25,9 @@ struct PresetEditor: View {
             airPlayControls
             DisplayDiagram(displays: draft.displays, moved: { id, x, y in
                 if let i = draft.displays.firstIndex(where: { $0.id == id }) {
-                    draft.displays[i].x = min(100_000, max(-100_000, x)); draft.displays[i].y = min(100_000, max(-100_000, y))
+                    guard let snapped = Configuration.snappedPosition(draft.displays, moving: id, to: (x, y)) else { return }
+                    draft.displays[i].x = min(100_000, max(-100_000, snapped.x)); draft.displays[i].y = min(100_000, max(-100_000, snapped.y))
+                    validation = nil
                 }
             }).frame(height: 210)
             Text("Drag extended displays to arrange them, or use exact positions below. The main display stays at (0, 0).")
@@ -45,6 +47,7 @@ struct PresetEditor: View {
                 Button("Save preset") {
                     do {
                         try Configuration.validate(draft)
+                        if let issue = Configuration.arrangementIssue(draft.displays) { validation = issue; return }
                         if draft.displays != original.displays || draft.airPlay != original.airPlay { draft.confirmed = false }
                         store.save(draft)
                     } catch { validation = error.localizedDescription }
@@ -197,7 +200,7 @@ struct PresetEditor: View {
             if connected.setting.rotation % 180 != display.rotation % 180 { copy.width = mode.height; copy.height = mode.width }
             return copy
         }
-        return Array(Set(modes + [display.mode])).sorted { $0.id < $1.id }
+        return Array(Set(modes + [display.mode])).sorted(by: DisplayMode.pickerOrder)
     }
 }
 
