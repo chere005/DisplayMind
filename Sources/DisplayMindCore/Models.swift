@@ -44,15 +44,40 @@ public struct ConnectedDisplay: Identifiable, Equatable {
     }
 }
 
+public struct AudioDevice: Codable, Equatable, Hashable {
+    /// CoreAudio device UID (`kAudioDevicePropertyDeviceUID`); the numeric `AudioDeviceID` changes across connections.
+    public var uid: String
+    public var name: String
+    public init(uid: String, name: String) { self.uid = uid; self.name = name }
+}
+
+/// The default sound devices; a nil side means "do not change".
+public struct AudioSelection: Codable, Equatable {
+    public var output: AudioDevice?
+    public var input: AudioDevice?
+    public init(output: AudioDevice? = nil, input: AudioDevice? = nil) { self.output = output; self.input = input }
+    public var isEmpty: Bool { output == nil && input == nil }
+    /// True when a side this selection names is not the current default.
+    public func differs(from current: AudioSelection) -> Bool {
+        (output.map { $0.uid != current.output?.uid } ?? false) || (input.map { $0.uid != current.input?.uid } ?? false)
+    }
+    /// Only the sides of `self` that `wanted` also names (what a change to `wanted` would overwrite); nil when none.
+    public func limited(to wanted: AudioSelection) -> AudioSelection? {
+        let kept = AudioSelection(output: wanted.output == nil ? nil : output, input: wanted.input == nil ? nil : input)
+        return kept.isEmpty ? nil : kept
+    }
+}
+
 public struct Preset: Codable, Equatable, Identifiable {
     public var id: UUID
     public var name: String
     public var displays: [DisplaySetting]
     public var confirmed: Bool
     public var airPlay: AirPlayDestination?
-    public init(id: UUID = UUID(), name: String, displays: [DisplaySetting], confirmed: Bool = false, airPlay: AirPlayDestination? = nil) {
+    public var audio: AudioSelection?
+    public init(id: UUID = UUID(), name: String, displays: [DisplaySetting], confirmed: Bool = false, airPlay: AirPlayDestination? = nil, audio: AudioSelection? = nil) {
         self.id = id; self.name = name; self.displays = displays; self.confirmed = confirmed
-        self.airPlay = airPlay
+        self.airPlay = airPlay; self.audio = audio
     }
 }
 
@@ -134,6 +159,12 @@ public enum Configuration {
                   !target.receiverName.contains(where: { $0.isNewline }),
                   preset.displays.contains(where: { $0.id == target.displayID && $0.enabled }) else {
                 throw DisplayMindError("Choose an AirPlay receiver and its enabled display in this preset.")
+            }
+        }
+        for device in [preset.audio?.output, preset.audio?.input].compactMap({ $0 }) {
+            guard !device.uid.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, device.uid.count <= 256, !device.uid.contains(where: { $0.isNewline }),
+                  !device.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, device.name.count <= 256, !device.name.contains(where: { $0.isNewline }) else {
+                throw DisplayMindError("A saved sound device is invalid. Choose the sound devices again.")
             }
         }
     }

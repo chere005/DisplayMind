@@ -72,6 +72,16 @@ final class ConfigurationTests: XCTestCase {
         XCTAssertThrowsError(try Configuration.validate(d))
         XCTAssertThrowsError(try Configuration.validate([]))
     }
+    func testValidatesSavedSoundDevices() throws {
+        func preset(_ audio: AudioSelection?) -> Preset { Preset(name: "P", displays: layout(), audio: audio) }
+        try Configuration.validate(preset(nil))
+        try Configuration.validate(preset(AudioSelection(output: AudioDevice(uid: "a", name: "A"))))
+        for bad in [AudioDevice(uid: "", name: "A"), AudioDevice(uid: "a", name: "  "), AudioDevice(uid: "a\nb", name: "A"), AudioDevice(uid: "a", name: "A\nB"),
+                    AudioDevice(uid: String(repeating: "x", count: 257), name: "A"), AudioDevice(uid: "a", name: String(repeating: "x", count: 257))] {
+            XCTAssertThrowsError(try Configuration.validate(preset(AudioSelection(input: bad))))
+            XCTAssertThrowsError(try Configuration.validate(preset(AudioSelection(output: bad))))
+        }
+    }
     func testChangingMainPreservesRelativePositions() throws {
         var d = layout(); Configuration.makeMain(displayB, displays: &d)
         XCTAssertEqual(d[0].x, -1920); XCTAssertEqual(d[1].x, 0)

@@ -1,4 +1,5 @@
 import AppKit
+import CoreAudio
 import CoreGraphics
 import DisplayMindCore
 import IOKit
@@ -112,6 +113,74 @@ enum Hardware {
     }
 }
 
+/// CoreAudio default-device access. Devices are identified by UID; the system-wide defaults are only ever written by `set`.
+enum SystemAudio {
+    private static let system = AudioObjectID(kAudioObjectSystemObject)
+    private static func address(_ selector: AudioObjectPropertySelector, _ scope: AudioObjectPropertyScope = kAudioObjectPropertyScopeGlobal) -> AudioObjectPropertyAddress {
+        AudioObjectPropertyAddress(mSelector: selector, mScope: scope, mElement: kAudioObjectPropertyElementMain)
+    }
+    private static func allDevices() -> [AudioDeviceID] {
+        var a = address(kAudioHardwarePropertyDevices); var size: UInt32 = 0
+        guard AudioObjectGetPropertyDataSize(system, &a, 0, nil, &size) == noErr else { return [] }
+        var ids = [AudioDeviceID](repeating: 0, count: Int(size) / MemoryLayout<AudioDeviceID>.size)
+        guard AudioObjectGetPropertyData(system, &a, 0, nil, &size, &ids) == noErr else { return [] }
+        return ids
+    }
+    private static func string(_ id: AudioObjectID, _ selector: AudioObjectPropertySelector) -> String? {
+        var a = address(selector); var size = UInt32(MemoryLayout<Unmanaged<CFString>?>.size); var value: Unmanaged<CFString>?
+        guard AudioObjectGetPropertyData(id, &a, 0, nil, &size, &value) == noErr, let value else { return nil }
+        return value.takeRetainedValue() as String
+    }
+    private static func hasStreams(_ id: AudioDeviceID, input: Bool) -> Bool {
+        var a = address(kAudioDevicePropertyStreams, input ? kAudioObjectPropertyScopeInput : kAudioObjectPropertyScopeOutput); var size: UInt32 = 0
+        return AudioObjectGetPropertyDataSize(id, &a, 0, nil, &size) == noErr && size > 0
+    }
+    private static func hidden(_ id: AudioDeviceID) -> Bool {
+        var a = address(kAudioDevicePropertyIsHidden); var size = UInt32(MemoryLayout<UInt32>.size); var value: UInt32 = 0
+        return AudioObjectGetPropertyData(id, &a, 0, nil, &size, &value) == noErr && value != 0
+    }
+    private static func describe(_ id: AudioDeviceID) -> AudioDevice? {
+        guard let uid = string(id, kAudioDevicePropertyDeviceUID) else { return nil }
+        return AudioDevice(uid: uid, name: string(id, kAudioObjectPropertyName) ?? uid)
+    }
+    private static func connected(input: Bool) -> [(id: AudioDeviceID, device: AudioDevice)] {
+        allDevices().filter { hasStreams($0, input: input) && !hidden($0) }.compactMap { id in describe(id).map { (id, $0) } }
+    }
+    static func devices(input: Bool) -> [AudioDevice] { connected(input: input).map(\.device) }
+    private static func defaultID(_ selector: AudioObjectPropertySelector) -> AudioDeviceID? {
+        var a = address(selector); var size = UInt32(MemoryLayout<AudioDeviceID>.size); var id = AudioDeviceID(kAudioObjectUnknown)
+        guard AudioObjectGetPropertyData(system, &a, 0, nil, &size, &id) == noErr, id != kAudioObjectUnknown else { return nil }
+        return id
+    }
+    static func current() -> AudioSelection {
+        AudioSelection(output: defaultID(kAudioHardwarePropertyDefaultOutputDevice).flatMap(describe), input: defaultID(kAudioHardwarePropertyDefaultInputDevice).flatMap(describe))
+    }
+    private static func setDefault(_ selector: AudioObjectPropertySelector, _ device: AudioDeviceID, _ what: String) throws {
+        var a = address(selector); var id = device
+        let status = AudioObjectSetPropertyData(system, &a, 0, nil, UInt32(MemoryLayout<AudioDeviceID>.size), &id)
+        guard status == noErr else { throw DisplayMindError("macOS could not set the default \(what) (CoreAudio error \(status)).") }
+    }
+    /// Sets the named sides (output also becomes the alert-sound device); returns the names of devices that are not connected.
+    static func set(_ wanted: AudioSelection) throws -> [String] {
+        var missing: [String] = []
+        let now = current()
+        if let device = wanted.output {
+            if let match = connected(input: false).first(where: { $0.device.uid == device.uid }) {
+                if now.output?.uid != device.uid {
+                    try setDefault(kAudioHardwarePropertyDefaultOutputDevice, match.id, "sound output")
+                    try setDefault(kAudioHardwarePropertyDefaultSystemOutputDevice, match.id, "alert sound output")
+                }
+            } else { missing.append(device.name) }
+        }
+        if let device = wanted.input {
+            if let match = connected(input: true).first(where: { $0.device.uid == device.uid }) {
+                if now.input?.uid != device.uid { try setDefault(kAudioHardwarePropertyDefaultInputDevice, match.id, "sound input") }
+            } else { missing.append(device.name) }
+        }
+        return missing
+    }
+}
+
 /// Display reconfiguration, USB attach/detach and wake, delivered on the main actor. Everything is unregistered on deinit.
 final class LiveHardwareMonitor {
     private final class Sink: @unchecked Sendable {
@@ -206,9 +275,9 @@ struct RecoveryController {
             try write(journal)
         }
     }
-    func arm(previous: [DisplaySetting], setupTimeout: TimeInterval = 65, launch: (URL) throws -> Void = RecoveryController.launchWatchdog) throws -> RecoveryJournal {
+    func arm(previous: [DisplaySetting], previousAudio: AudioSelection? = nil, setupTimeout: TimeInterval = 65, launch: (URL) throws -> Void = RecoveryController.launchWatchdog) throws -> RecoveryJournal {
         try Configuration.validate(previous)
-        let journal = RecoveryJournal(deadline: Date().addingTimeInterval(setupTimeout), previous: previous)
+        let journal = RecoveryJournal(deadline: Date().addingTimeInterval(setupTimeout), previous: previous, previousAudio: previousAudio)
         try withLock {
             guard !FileManager.default.fileExists(atPath: pendingURL.path) else { throw DisplayMindError("A display change is already awaiting confirmation.") }
             try? FileManager.default.removeItem(at: resultURL)
@@ -285,7 +354,7 @@ struct RecoveryController {
     }
     func result() -> RecoveryResult? { try? JSONDecoder().decode(RecoveryResult.self, from: Data(contentsOf: resultURL)) }
 
-    func watch(backend: DisplayBackend, disconnectAirPlay: (AirPlayDestination) throws -> Void = { try AirPlayController().setConnected($0, false) }) {
+    func watch(backend: DisplayBackend, disconnectAirPlay: (AirPlayDestination) throws -> Void = { try AirPlayController().setConnected($0, false) }, audio: AudioActions = .live) {
         while let journal = read() {
             if journal.deadline > Date() { Thread.sleep(forTimeInterval: 0.25); continue }
             let claimed = directory.appendingPathComponent("restoring-\(journal.id).json")
@@ -299,7 +368,7 @@ struct RecoveryController {
                             try FileManager.default.moveItem(at: pendingURL, to: claimed)
                         }
                     } catch { return }
-                    restore(journal, claimed: claimed, backend: backend, disconnectAirPlay: disconnectAirPlay)
+                    restore(journal, claimed: claimed, backend: backend, disconnectAirPlay: disconnectAirPlay, audio: audio)
                     finished = true
                 }
             } catch {
@@ -313,12 +382,12 @@ struct RecoveryController {
         }
     }
     /// Resumes a restore whose watchdog died after claiming the journal. Blocks until any live restore finishes, then re-checks before acting.
-    func resume(_ journal: RecoveryJournal, backend: DisplayBackend, disconnectAirPlay: (AirPlayDestination) throws -> Void = { try AirPlayController().setConnected($0, false) }) {
+    func resume(_ journal: RecoveryJournal, backend: DisplayBackend, disconnectAirPlay: (AirPlayDestination) throws -> Void = { try AirPlayController().setConnected($0, false) }, audio: AudioActions = .live) {
         let claimed = directory.appendingPathComponent("restoring-\(journal.id).json")
         do {
             try withRestoreLock {
                 guard result()?.id != journal.id, FileManager.default.fileExists(atPath: claimed.path) else { return }   // the watchdog finished meanwhile: its result stands
-                restore(journal, claimed: claimed, backend: backend, disconnectAirPlay: disconnectAirPlay)
+                restore(journal, claimed: claimed, backend: backend, disconnectAirPlay: disconnectAirPlay, audio: audio)
             }
         } catch {
             let failure = RecoveryResult(id: journal.id, error: error.localizedDescription)
@@ -326,7 +395,7 @@ struct RecoveryController {
         }
     }
     /// The caller holds the restore lock.
-    private func restore(_ journal: RecoveryJournal, claimed: URL, backend: DisplayBackend, disconnectAirPlay: (AirPlayDestination) throws -> Void) {
+    private func restore(_ journal: RecoveryJournal, claimed: URL, backend: DisplayBackend, disconnectAirPlay: (AirPlayDestination) throws -> Void, audio: AudioActions) {
         var failure: String?
         if let target = journal.startedAirPlay {
             do { try disconnectAirPlay(target) }
@@ -348,6 +417,11 @@ struct RecoveryController {
                 _ = try backend.applyVerified(previous, rejected: "macOS did not restore every display setting. Open Display Settings to recover the layout.")
             }
         } catch { failure = [failure, error.localizedDescription].compactMap { $0 }.joined(separator: " ") }
+        // Best effort, after the layout: a missing previous device is not an error, a CoreAudio failure is only reported.
+        if let previousAudio = journal.previousAudio {
+            do { _ = try audio.set(previousAudio) }
+            catch { failure = [failure, "Could not restore the previous sound devices: \(error.localizedDescription)"].compactMap { $0 }.joined(separator: " ") }
+        }
         let result = RecoveryResult(id: journal.id, error: failure)
         if let data = try? JSONEncoder().encode(result) { try? data.write(to: resultURL, options: .atomic) }
         if failure == nil { try? FileManager.default.removeItem(at: claimed) }

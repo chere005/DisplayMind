@@ -7,8 +7,11 @@ struct PresetEditor: View {
     @State private var draft: Preset
     @State private var selectedID: String
     @State private var validation: String?
+    @State private var outputs: [AudioDevice]
+    @State private var inputs: [AudioDevice]
     init(store: Store, original: Preset) {
         self.store = store; self.original = original
+        _outputs = State(initialValue: store.audio.outputs()); _inputs = State(initialValue: store.audio.inputs())
         _draft = State(initialValue: original)
         _selectedID = State(initialValue: original.displays.first?.id ?? "")
     }
@@ -23,6 +26,7 @@ struct PresetEditor: View {
             ScrollView {
             VStack(alignment: .leading, spacing: 18) {
             airPlayControls
+            soundControls
             DisplayDiagram(displays: draft.displays, moved: { id, x, y in
                 if let i = draft.displays.firstIndex(where: { $0.id == id }) {
                     guard let snapped = Configuration.snappedPosition(draft.displays, moving: id, to: (x, y)) else { return }
@@ -105,6 +109,29 @@ struct PresetEditor: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
         }.padding(14).background(Color.accentColor.opacity(0.045), in: RoundedRectangle(cornerRadius: 10))
+    }
+    private func soundPicker(_ title: String, connected: [AudioDevice], saved: AudioDevice?, set: @escaping (AudioDevice?) -> Void) -> some View {
+        let options = connected + (saved.map { s in connected.contains(where: { $0.uid == s.uid }) ? [] : [s] } ?? [])
+        return Picker(title, selection: Binding(get: { saved?.uid ?? "" }, set: { uid in set(options.first { $0.uid == uid }) })) {
+            Text("Don’t change").tag("")
+            ForEach(options, id: \.uid) { device in
+                Text(device.name + (connected.contains(where: { $0.uid == device.uid }) ? "" : " (not connected)")).tag(device.uid)
+            }
+        }
+    }
+    private func setSound(_ change: (inout AudioSelection) -> Void) {
+        var selection = draft.audio ?? AudioSelection()
+        change(&selection)
+        draft.audio = selection.isEmpty ? nil : selection
+    }
+    private var soundControls: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Sound").fontWeight(.medium)
+            soundPicker("Output", connected: outputs, saved: draft.audio?.output) { device in setSound { $0.output = device } }
+            soundPicker("Input", connected: inputs, saved: draft.audio?.input) { device in setSound { $0.input = device } }
+            Text("Applying the preset sets these as the Mac’s sound devices after the displays are arranged. A device that is not connected is skipped.")
+                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+        }.padding(14).frame(maxWidth: .infinity, alignment: .leading).background(Color.accentColor.opacity(0.045), in: RoundedRectangle(cornerRadius: 10))
     }
     @ViewBuilder private func displayControls(_ index: Int) -> some View {
         let display = draft.displays[index]

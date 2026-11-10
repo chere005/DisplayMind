@@ -38,6 +38,10 @@ Connection rules can trigger while the preset’s AirPlay display is offline. Us
 
 Control Center must expose its Screen Mirroring controls to Accessibility. Device selection uses an exact saved control identifier or an unambiguous exact name; DisplayMind never falls back to an arbitrary receiver. If macOS changes a control or a saved display identity, the app reports the problem and recovers instead of guessing. This feature controls screen streaming, not audio-only AirPlay or Sidecar.
 
+## Sound
+
+A preset saves the Mac's default sound output and input when captured; the editor's **Sound** section changes either, or leaves one on **Don't change**. Devices are matched by CoreAudio UID. Applying the preset sets them after the displays verify (output also becomes the alert-sound device). A saved device that is not connected is skipped and named in the status or notification; the layout stays. A sound error is reported without reverting the layout. Reverting, expiry and the watchdog put back the previous devices after the layout, best effort. Changing only the sound devices keeps a preset eligible for automatic rules.
+
 ## Build
 
 Requires macOS 13 or later and Xcode Command Line Tools with Swift 5.9 or later. The app and helper build for the current Mac's architecture. No downloaded packages, Homebrew, or network access are needed for building after cloning.
@@ -56,7 +60,7 @@ Release: `tools/tdtp.sh` (full preflight) or `tools/dtp.sh` (build, `--diagnosti
 
 ## Storage and privacy
 
-Settings live in the visible `~/DisplayMind/settings.json` folder. The app has no analytics or account. Display UUIDs, USB identities, and AirPlay receiver selections stay in local settings. macOS handles the network connection and screen streaming when AirPlay is selected. **Open data folder** reveals local settings. Invalid or newer settings files are preserved and reported instead of silently reset. Existing presets without an AirPlay setting retain their behavior.
+Settings live in the visible `~/DisplayMind/settings.json` folder. The app has no analytics or account. Display UUIDs, USB identities, AirPlay receiver selections, and sound device names and UIDs stay in local settings. macOS handles the network connection and screen streaming when AirPlay is selected. **Open data folder** reveals local settings. Invalid or newer settings files are preserved and reported instead of silently reset. Existing presets without an AirPlay or sound setting retain their behavior.
 
 During a pending change, `pending-change.json` holds the previous configuration. A separate watchdog restores it when the deadline expires, even if the UI exits. A failed rollback retains a `restoring-*.json` snapshot and records the failure. Reopening the app resumes recovery for an interrupted pending change. It also finishes a restore the watchdog claimed but never completed (a `restoring-*.json` with no result, under an hour old), and reports a failed recovery that happened while the app was closed, once.
 

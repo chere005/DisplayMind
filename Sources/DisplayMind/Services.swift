@@ -31,6 +31,21 @@ struct AirPlayActions {
                                      setConnected: { try AirPlayController().setConnected($0, $1, beforeConnect: $2) })
 }
 
+/// Default sound devices. `set` applies the non-nil sides and returns the names of saved devices that are not connected.
+struct AudioActions {
+    var outputs: @Sendable () -> [AudioDevice]
+    var inputs: @Sendable () -> [AudioDevice]
+    var current: @Sendable () -> AudioSelection
+    var set: @Sendable (AudioSelection) throws -> [String]
+    static let live = AudioActions(outputs: { SystemAudio.devices(input: false) }, inputs: { SystemAudio.devices(input: true) },
+                                   current: { SystemAudio.current() }, set: { try SystemAudio.set($0) })
+    /// Preview mode: fixed device lists, never touches the system.
+    static let demo = AudioActions(outputs: { [AudioDevice(uid: "demo-speakers", name: "MacBook Pro Speakers"), AudioDevice(uid: "demo-display", name: "Studio Display Speakers")] },
+                                   inputs: { [AudioDevice(uid: "demo-mic", name: "MacBook Pro Microphone")] },
+                                   current: { AudioSelection(output: AudioDevice(uid: "demo-speakers", name: "MacBook Pro Speakers"), input: AudioDevice(uid: "demo-mic", name: "MacBook Pro Microphone")) },
+                                   set: { _ in [] })
+}
+
 /// Owns the notification center delegate (banners while the app is frontmost) and asks for authorization only once.
 final class NotificationPresenter: NSObject, UNUserNotificationCenterDelegate, @unchecked Sendable {
     static let shared = NotificationPresenter()

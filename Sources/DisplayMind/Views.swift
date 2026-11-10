@@ -131,6 +131,10 @@ struct MainView: View {
                 Label("AirPlay → \(target.receiverName)" + (store.connectedIDs.contains(target.displayID) ? " · Connected" : " · Connects when applied"), systemImage: "airplayvideo")
                     .font(.callout).foregroundStyle(.secondary)
             }
+            if let audio = preset.audio, !audio.isEmpty {
+                Label([audio.output.map { "Sound → " + $0.name }, audio.input.map { "Mic → " + $0.name }].compactMap { $0 }.joined(separator: " · "), systemImage: "speaker.wave.2")
+                    .font(.callout).foregroundStyle(.secondary)
+            }
             HStack(spacing: 10) {
                 Button { Task { await store.apply(preset) } } label: { Label("Apply preset", systemImage: "play.fill").padding(.horizontal, 8) }
                     .buttonStyle(.borderedProminent).controlSize(.large)

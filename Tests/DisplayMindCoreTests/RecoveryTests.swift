@@ -39,6 +39,21 @@ final class RecoveryTests: XCTestCase {
         XCTAssertNil(recovery.result()?.error)
         XCTAssertTrue(try String(contentsOf: dir.appendingPathComponent("applied.txt")).contains("degree:90"))
     }
+    func testWatchdogRestoresPreviousSoundAfterTheLayoutAndReportsAFailure() throws {
+        let previous = layout(); var changed = previous; changed[1].rotation = 270
+        let backend = try fakeBackend(current: changed, restored: previous)
+        let fake = FakeAudio(); fake.now = AudioSelection(output: tvSound, input: mic)
+        try writeJournal(RecoveryJournal(deadline: .distantPast, previous: previous, previousAudio: AudioSelection(output: speakers)))
+        let recovery = RecoveryController(directory: dir)
+        recovery.watch(backend: backend, audio: fake.actions)
+        XCTAssertNil(recovery.result()?.error); XCTAssertEqual(fake.now, AudioSelection(output: speakers, input: mic))
+        // A CoreAudio failure is appended to the error, and the layout was still restored.
+        fake.failure = "boom"
+        try writeJournal(RecoveryJournal(deadline: .distantPast, previous: previous, previousAudio: AudioSelection(output: tvSound)))
+        recovery.watch(backend: backend, audio: fake.actions)
+        XCTAssertTrue(recovery.result()?.error?.contains("Could not restore the previous sound devices: boom") == true)
+        XCTAssertTrue(try String(contentsOf: dir.appendingPathComponent("applied.txt")).contains("degree:90"))
+    }
     func testKeepCancelsRollbackAndDeadlineCannotResurrectJournal() throws {
         let backend = try fakeBackend(current: layout(), restored: layout())
         let journal = RecoveryJournal(deadline: Date().addingTimeInterval(20), previous: layout())

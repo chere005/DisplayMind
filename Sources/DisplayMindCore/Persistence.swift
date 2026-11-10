@@ -25,8 +25,10 @@ public struct RecoveryJournal: Codable {
     public var deadline: Date
     public var previous: [DisplaySetting]
     public var startedAirPlay: AirPlayDestination?
-    public init(id: UUID = UUID(), deadline: Date, previous: [DisplaySetting]) {
-        self.id = id; self.deadline = deadline; self.previous = previous
+    /// The default sound devices before the change (only the sides the change overwrote); absent in older journals.
+    public var previousAudio: AudioSelection?
+    public init(id: UUID = UUID(), deadline: Date, previous: [DisplaySetting], previousAudio: AudioSelection? = nil) {
+        self.id = id; self.deadline = deadline; self.previous = previous; self.previousAudio = previousAudio
     }
 }
 

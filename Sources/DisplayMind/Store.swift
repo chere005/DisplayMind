@@ -27,6 +27,7 @@ import ServiceManagement
     let recovery: RecoveryController
     let hardware: HardwareProvider
     let airPlay: AirPlayActions
+    let audio: AudioActions
     let notifier: Notifier
     var launchWatchdog: (URL) throws -> Void
     var windowVisible: @MainActor () -> Bool
@@ -59,13 +60,15 @@ import ServiceManagement
 
     /// `background: false` skips the monitor, timers and first refresh so tests can drive `refresh()` / `tick()` directly; a `monitor` passed explicitly (a fake) turns the event-driven scheduling on.
     init(directory: URL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("DisplayMind"), demo: Bool = false,
-         backend: DisplayBackend = DisplayBackend(), hardware: HardwareProvider = .live, airPlay: AirPlayActions = .live, notifier: Notifier = .live,
+         backend: DisplayBackend = DisplayBackend(), hardware: HardwareProvider = .live, airPlay: AirPlayActions = .live, audio: AudioActions = .live, notifier: Notifier = .live,
          launchWatchdog: @escaping (URL) throws -> Void = RecoveryController.launchWatchdog,
          windowVisible: @escaping @MainActor () -> Bool = mainWindowVisible, background: Bool = true, monitor: HardwareMonitor? = nil) {
         scheduling = background || monitor != nil
         settingsFile = SettingsFile(directory: directory)
         recovery = RecoveryController(directory: directory)
         self.backend = backend; self.hardware = hardware; self.airPlay = airPlay
+        let audio = demo ? AudioActions.demo : audio
+        self.audio = audio
         self.notifier = demo ? .none : notifier
         self.launchWatchdog = launchWatchdog; self.windowVisible = windowVisible
         airPlayAuthorized = airPlay.authorized()
@@ -80,13 +83,13 @@ import ServiceManagement
             recoveryID = journal.id
             busy = true
             try? recovery.requestRevert()
-            Task.detached { recovery.watch(backend: backend, disconnectAirPlay: disconnect) }
+            Task.detached { recovery.watch(backend: backend, disconnectAirPlay: disconnect, audio: audio) }
         } else if let orphan = recovery.orphanedRestore() {
             // The watchdog died after claiming the journal: finish the restore, verified and reported through tick().
             recoveryID = orphan.id
             busy = true
             status = "Restoring previous layout…"
-            Task.detached { recovery.resume(orphan, backend: backend, disconnectAirPlay: disconnect) }
+            Task.detached { recovery.resume(orphan, backend: backend, disconnectAirPlay: disconnect, audio: audio) }
         } else if let result = recovery.result(), let failure = result.error, result.acknowledged != true {
             status = Self.attention
             recoveryUnacknowledged = true
@@ -180,6 +183,15 @@ import ServiceManagement
     func defaultRuleDevices(for preset: Preset) -> [Device] {
         devices.filter { $0.kind == .display && $0.id != "display:\(preset.airPlay?.displayID ?? "")" }
     }
+    /// Sets the preset's sound devices. A CoreAudio error is reported but never reverts the layout; returns a note naming saved devices that are not connected.
+    private func applySound(_ preset: Preset) async -> String? {
+        guard let wanted = preset.audio, !wanted.isEmpty else { return nil }
+        let audio = self.audio
+        do {
+            let missing = try await Task.detached { try audio.set(wanted) }.value
+            return missing.isEmpty ? nil : "Sound device not connected: " + missing.joined(separator: ", ") + "."
+        } catch { fail(error.localizedDescription); return nil }
+    }
     private func persist(_ updated: AppSettings) -> Bool {
         guard writable else { fail("The existing settings file could not be read. It has been preserved in ~/DisplayMind."); return false }
         do { try settingsFile.save(updated); settings = updated; return true }
@@ -201,7 +213,8 @@ import ServiceManagement
             let backend = self.backend
             let current = try await Task.detached { try backend.read() }.value
             displays = hardware.nameDisplays(current)
-            editorPreset = Preset(name: "Preset \(settings.presets.count + 1)", displays: displays.map(\.setting), confirmed: true)
+            editorPreset = Preset(name: "Preset \(settings.presets.count + 1)", displays: displays.map(\.setting), confirmed: true,
+                                  audio: Optional(audio.current()).flatMap { $0.isEmpty ? nil : $0 })
         } catch { report(error) }
     }
     func save(_ preset: Preset) {
@@ -272,18 +285,22 @@ import ServiceManagement
         do {
             let backend = self.backend, hardware = self.hardware, airPlay = self.airPlay
             try Configuration.validate(preset)
+            let soundBefore = audio.current()
             let current = try await Task.detached { try backend.read() }.value
             if let reason = Configuration.availability(preset, connected: Set(current.map(\.id))) { throw DisplayMindError(reason) }
             _ = try Configuration.arguments(for: preset.displays)
             if Configuration.matches(preset.displays, actual: current.map(\.setting)) {
                 if !preset.confirmed { confirm(preset.id) }
-                status = "\(preset.name) is active"
+                var note: String?
+                if let wanted = preset.audio, wanted.differs(from: soundBefore) { note = await applySound(preset) }
+                status = "\(preset.name) is active" + (note.map { ". " + $0 } ?? "")
+                if automatic, let note { notifier.post("DisplayMind", "\(preset.name): " + note) }
                 busy = false
                 return
             }
             let needsAirPlay = preset.airPlay.map { target in !current.contains(where: { $0.id == target.displayID }) } ?? false
             if needsAirPlay { try airPlay.requireAccess() }
-            var journal = try recovery.arm(previous: current.map(\.setting), setupTimeout: needsAirPlay ? 240 : 120, launch: launchWatchdog)
+            var journal = try recovery.arm(previous: current.map(\.setting), previousAudio: preset.audio.flatMap { soundBefore.limited(to: $0) }, setupTimeout: needsAirPlay ? 240 : 120, launch: launchWatchdog)
             recoveryID = journal.id
             if needsAirPlay, let target = preset.airPlay {
                 status = "Connecting AirPlay to \(target.receiverName)…"
@@ -307,11 +324,13 @@ import ServiceManagement
                 }.value
             }
             displays = Hardware.nameDisplays(actual)
+            let note = await applySound(preset)
             if automatic {
                 try recovery.keep(id: journal.id)
                 recoveryID = nil
-                status = "Automatically applied \(preset.name)"
-                notifier.post("DisplayMind", "Automatically applied \(preset.name)")
+                let suffix = note.map { ". " + $0 } ?? ""
+                status = "Automatically applied \(preset.name)" + suffix
+                notifier.post("DisplayMind", "Automatically applied \(preset.name)" + suffix)
                 gate.consume(hardware.devices(), now: Date())
                 busy = false
             } else {
@@ -319,7 +338,7 @@ import ServiceManagement
                 try recovery.updateDeadline(id: journal.id, deadline: journal.deadline)
                 pending = PendingChange(journal: journal, preset: preset)
                 secondsRemaining = 20
-                status = "Keep this display layout?"
+                status = "Keep this display layout?" + (note.map { " " + $0 } ?? "")
                 busy = false
                 openWindow?()
             }
@@ -385,7 +404,8 @@ import ServiceManagement
         let a = DisplaySetting(id: "00000000-0000-0000-0000-000000000001", name: "Studio Display", mode: DisplayMode(width: 2560, height: 1440, hertz: 60, scaled: true))
         let b = DisplaySetting(id: "00000000-0000-0000-0000-000000000002", name: "Portrait display", mode: DisplayMode(width: 1080, height: 1920, hertz: 60), rotation: 90, x: 2560)
         let c = DisplaySetting(id: "00000000-0000-0000-0000-000000000003", name: "Built-in display", mode: DisplayMode(width: 1512, height: 982, hertz: 120, scaled: true), x: 400, y: 1440)
-        let preset = Preset(name: "At my desk", displays: [a,b,c], confirmed: true)
+        let preset = Preset(name: "At my desk", displays: [a,b,c], confirmed: true,
+                            audio: AudioSelection(output: AudioDevice(uid: "demo-display", name: "Studio Display Speakers"), input: AudioDevice(uid: "demo-mic", name: "MacBook Pro Microphone")))
         var laptop = c; laptop.x = 0; laptop.y = 0
         settings.presets = [preset, Preset(name: "Presentation", displays: [a], confirmed: true), Preset(name: "Just the laptop", displays: [laptop], confirmed: true)]
         displays = [a,b,c].map { ConnectedDisplay(setting: $0, modes: [$0.mode]) }

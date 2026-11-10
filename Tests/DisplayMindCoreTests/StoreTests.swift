@@ -2,12 +2,35 @@ import XCTest
 @testable import DisplayMindCore
 @testable import DisplayMind
 
+let speakers = AudioDevice(uid: "spk", name: "Speakers"), tvSound = AudioDevice(uid: "hdmi", name: "TV"), mic = AudioDevice(uid: "mic", name: "Mic")
+
+/// A fake CoreAudio: connected devices, the current defaults and every `set` call; never touches the machine.
+final class FakeAudio: @unchecked Sendable {
+    let lock = NSLock()
+    var outputs = [speakers, tvSound], inputs = [mic]
+    var now = AudioSelection(output: speakers, input: mic)
+    var sets: [AudioSelection] = []
+    var failure: String?
+    var actions: AudioActions {
+        AudioActions(outputs: { self.outputs }, inputs: { self.inputs }, current: { self.lock.lock(); defer { self.lock.unlock() }; return self.now }, set: { wanted in
+            self.lock.lock(); defer { self.lock.unlock() }
+            self.sets.append(wanted)
+            if let failure = self.failure { throw DisplayMindError(failure) }
+            var missing: [String] = []
+            if let o = wanted.output { if self.outputs.contains(o) { self.now.output = o } else { missing.append(o.name) } }
+            if let i = wanted.input { if self.inputs.contains(i) { self.now.input = i } else { missing.append(i.name) } }
+            return missing
+        })
+    }
+}
+
 /// Drives `Store` against a fake displayplacer in a temp directory and an in-process stand-in for the watchdog process.
 final class StoreTests: XCTestCase {
     final class Posts { var items: [String] = [] }
     var dir: URL!
     var data: URL!
     let posts = Posts()
+    let sound = FakeAudio()
     var previous: [DisplaySetting] { layout() }
     var target: [DisplaySetting] { var d = layout(); d[1].rotation = 270; return d }
     var partial: [DisplaySetting] { var d = layout(); d[1].rotation = 0; return d }
@@ -50,11 +73,11 @@ final class StoreTests: XCTestCase {
         let hardware = HardwareProvider(devices: { devices }, connectedDisplayIDs: { ids }, nameDisplays: { $0 })
         let airPlay = AirPlayActions(authorized: { true }, requireAccess: {}, requestAccess: {}, receivers: { [] },
                                      setConnected: { _, _, _ in XCTFail("AirPlay must not be touched") })
-        let posts = self.posts
-        let store = Store(directory: data, backend: backend, hardware: hardware, airPlay: airPlay,
+        let posts = self.posts, sound = self.sound
+        let store = Store(directory: data, backend: backend, hardware: hardware, airPlay: airPlay, audio: sound.actions,
                           notifier: Notifier { title, body in posts.items.append(body) },
                           launchWatchdog: { directory in
-                              Thread.detachNewThread { RecoveryController(directory: directory).watch(backend: backend, disconnectAirPlay: { _ in }) }
+                              Thread.detachNewThread { RecoveryController(directory: directory).watch(backend: backend, disconnectAirPlay: { _ in }, audio: sound.actions) }
                           }, windowVisible: { windowVisible }, background: false)
         store.settle = 0
         return store
@@ -286,6 +309,92 @@ final class StoreTests: XCTestCase {
         store.save(again)
         XCTAssertFalse(store.settings.presets[0].confirmed)
     }
+    @MainActor func testCaptureRecordsCurrentSoundDevices() async throws {
+        let store = makeStore(try backend(current: previous))
+        await store.capture()
+        XCTAssertEqual(store.editorPreset?.audio, AudioSelection(output: speakers, input: mic))
+        XCTAssertTrue(sound.sets.isEmpty)
+    }
+    @MainActor func testLegacyPresetAndJournalDecodeAndApplyWithoutTouchingSound() async throws {
+        let json = String(data: try JSONEncoder().encode(Preset(name: "Wide", displays: target)), encoding: .utf8)!
+        XCTAssertFalse(json.contains("audio"))
+        let legacy = try JSONDecoder().decode(Preset.self, from: Data(json.utf8))
+        XCTAssertNil(legacy.audio)
+        let old = try JSONDecoder().decode(RecoveryJournal.self, from: JSONEncoder().encode(RecoveryJournal(deadline: .distantPast, previous: previous)))
+        XCTAssertNil(old.previousAudio)
+        let backend = try backend(current: previous, steps: [1: target])
+        try save(presets: [legacy])
+        let store = makeStore(backend)
+        await store.apply(legacy)
+        XCTAssertNotNil(store.pending); XCTAssertTrue(sound.sets.isEmpty)
+        store.keep()
+        XCTAssertTrue(sound.sets.isEmpty)
+    }
+    @MainActor func testManualApplySetsSoundAfterLayoutAndRevertRestoresPrevious() async throws {
+        let backend = try backend(current: previous, steps: [1: target, 2: previous])
+        let preset = Preset(name: "Wide", displays: target, audio: AudioSelection(output: tvSound))
+        try save(presets: [preset])
+        let store = makeStore(backend)
+        await store.apply(preset)
+        XCTAssertNotNil(store.pending)
+        XCTAssertEqual(sound.sets, [AudioSelection(output: tvSound)]); XCTAssertEqual(sound.now, AudioSelection(output: tvSound, input: mic))
+        XCTAssertEqual(RecoveryController(directory: data).read()?.previousAudio, AudioSelection(output: speakers))
+        store.revert()
+        await tickUntil(store) { !store.busy }
+        XCTAssertTrue(try layoutMatches(backend, previous))
+        XCTAssertEqual(sound.now, AudioSelection(output: speakers, input: mic))
+        XCTAssertNil(RecoveryController(directory: data).result()?.error)
+    }
+    @MainActor func testAutomaticApplySetsSound() async throws {
+        let backend = try backend(current: previous, steps: [1: target])
+        let preset = Preset(name: "Wide", displays: target, confirmed: true, audio: AudioSelection(output: tvSound, input: mic))
+        let rule = ConnectionRule(name: "Desk", presetID: preset.id, requiredDevices: [bothDisplays[0]])
+        try save(presets: [preset], rules: [rule])
+        let store = makeStore(backend, devices: bothDisplays)
+        await store.refresh(); await store.tick()
+        XCTAssertEqual(store.status, "Automatically applied Wide"); XCTAssertNil(store.pending)
+        XCTAssertEqual(sound.now.output, tvSound); XCTAssertFalse(journalExists())
+    }
+    @MainActor func testMatchingDisplaysButDifferentSoundOnlySetsSound() async throws {
+        let backend = try backend(current: target)
+        let preset = Preset(name: "Wide", displays: target, audio: AudioSelection(output: tvSound))
+        try save(presets: [preset])
+        let store = makeStore(backend)
+        await store.apply(preset)
+        XCTAssertEqual(applyCalls(), 0); XCTAssertNil(store.pending); XCTAssertFalse(journalExists()); XCTAssertFalse(store.busy)
+        XCTAssertEqual(store.status, "Wide is active"); XCTAssertEqual(sound.now.output, tvSound)
+        await store.apply(preset)   // already the default: nothing more to set
+        XCTAssertEqual(sound.sets.count, 1)
+    }
+    @MainActor func testDisconnectedSoundDeviceKeepsLayoutAndIsReported() async throws {
+        let gone = AudioDevice(uid: "dac", name: "Desk DAC")
+        let backend = try backend(current: previous, steps: [1: target])
+        let preset = Preset(name: "Wide", displays: target, audio: AudioSelection(output: gone))
+        try save(presets: [preset])
+        let store = makeStore(backend)
+        await store.apply(preset)
+        XCTAssertNotNil(store.pending); XCTAssertTrue(store.status.contains("Desk DAC")); XCTAssertNil(store.error); XCTAssertNil(store.menuError)
+        XCTAssertTrue(try layoutMatches(backend, target)); XCTAssertEqual(sound.now.output, speakers)
+        store.keep()
+        XCTAssertTrue(try layoutMatches(backend, target))
+    }
+    @MainActor func testSoundErrorIsReportedButDoesNotRevert() async throws {
+        sound.failure = "boom"
+        let backend = try backend(current: previous, steps: [1: target])
+        let preset = Preset(name: "Wide", displays: target, audio: AudioSelection(output: tvSound))
+        try save(presets: [preset])
+        let store = makeStore(backend)
+        await store.apply(preset)
+        XCTAssertNotNil(store.pending); XCTAssertEqual(store.menuError, "boom"); XCTAssertTrue(try layoutMatches(backend, target))
+    }
+    @MainActor func testEditingOnlySoundKeepsThePresetConfirmed() throws {
+        let preset = Preset(name: "Wide", displays: target, confirmed: true)
+        try save(presets: [preset])
+        let store = makeStore(try backend(current: previous))
+        var draft = preset; draft.audio = AudioSelection(output: tvSound); draft.confirmed = false
+        store.save(draft)
+        XCTAssertEqual(store.settings.presets[0].audio?.output, tvSound); XCTAssertTrue(store.settings.presets[0].confirmed)
+    }
     func testSameLayoutIgnoresOnlyTheName() {
         var a = layout(); XCTAssertTrue(Configuration.sameLayout(a, layout()))
         a[0].name = "Other"; XCTAssertTrue(Configuration.sameLayout(a, layout()))
@@ -313,10 +422,10 @@ final class StoreTests: XCTestCase {
         let hardware = HardwareProvider(devices: { fake.devices }, connectedDisplayIDs: { [] }, nameDisplays: { $0 })
         let airPlay = AirPlayActions(authorized: { true }, requireAccess: {}, requestAccess: {}, receivers: { [] },
                                      setConnected: { _, _, _ in XCTFail("AirPlay must not be touched") })
-        let posts = self.posts
-        let store = Store(directory: data, backend: backend, hardware: hardware, airPlay: airPlay, notifier: Notifier { _, body in posts.items.append(body) },
+        let posts = self.posts, sound = self.sound
+        let store = Store(directory: data, backend: backend, hardware: hardware, airPlay: airPlay, audio: sound.actions, notifier: Notifier { _, body in posts.items.append(body) },
                           launchWatchdog: { directory in
-                              Thread.detachNewThread { RecoveryController(directory: directory).watch(backend: backend, disconnectAirPlay: { _ in }) }
+                              Thread.detachNewThread { RecoveryController(directory: directory).watch(backend: backend, disconnectAirPlay: { _ in }, audio: sound.actions) }
                           }, windowVisible: { false }, background: false, monitor: monitor.monitor)
         store.settle = settle; store.coalesce = 0.05
         return store
