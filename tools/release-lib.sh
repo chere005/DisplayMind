@@ -143,6 +143,17 @@ $OTHER"
     esac
   fi
 
+  # --- distributable: a notarized disk image for other Macs, when this Mac can notarize (before anything is pushed)
+  DMG_READY=0
+  if [ "$DRY" = 1 ]; then
+    printf '+ sh tools/dmg.sh   (when a notarytool keychain profile exists)\n'
+  elif sh tools/dmg.sh --ready; then
+    sh tools/dmg.sh
+    DMG_READY=1
+  else
+    say 'no notarytool keychain profile: this release is a tag without a disk image (see tools/dmg.sh)' >&2
+  fi
+
   # --- commit, tag, push
   run git add VERSION "$PLIST"
   if [ "$DRY" = 1 ] || ! git diff --cached --quiet; then
@@ -156,6 +167,14 @@ $OTHER"
   fi
   [ "$DRY" = 0 ] || printf '+ git push --atomic origin main %s\n' "$TAG"
 
+  # --- publish the disk image with the GitHub release
+  PUBLISH_FAILED=0
+  if [ "$DRY" = 1 ]; then
+    printf '+ sh tools/dmg.sh --publish-only   (when the image was built)\n'
+  elif [ "$DMG_READY" = 1 ]; then
+    sh tools/dmg.sh --publish-only || PUBLISH_FAILED=1
+  fi
+
   # --- install
   INSTALL_FAILED=0
   if [ -n "${DISPLAYMIND_INSTALL_DEST:-}" ]; then
@@ -165,10 +184,14 @@ $OTHER"
   fi
 
   REPORTED=1
+  if [ "$PUBLISH_FAILED" = 1 ]; then
+    report finish ok 2 "Released $TAG; the disk image was not published."
+    fail "released $TAG but the disk image was not published (retry with tools/dmg.sh --publish-only)"
+  fi
   if [ "$INSTALL_FAILED" = 1 ]; then
     report finish ok 2 "Released $TAG; install on this Mac failed."
     fail "released $TAG but the install failed"
   fi
   report finish ok 0 "Released $TAG."
-  say "released $TAG and installed it"
+  if [ "$DMG_READY" = 1 ]; then say "released $TAG with its disk image and installed it"; else say "released $TAG and installed it"; fi
 }

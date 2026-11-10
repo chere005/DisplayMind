@@ -42,9 +42,13 @@ DisplayMind recognises an AirPlay display from what macOS reports about it, and 
 
 A preset saves the Mac's default sound output and input when captured; the editor's **Sound** section changes either, or leaves one on **Don't change**. Devices are matched by CoreAudio UID. Bluetooth headphones in use are never taken off: a side whose current device is Bluetooth is left alone when a preset is applied, and when that device disconnects the active preset's device takes over instead of whatever macOS falls back to. A device you choose yourself while the headphones stay connected is left alone. Applying the preset sets them after the displays verify (output also becomes the alert-sound device). A saved device that is not connected is skipped and named in the status or notification; the layout stays. A sound error is reported without reverting the layout. Reverting, expiry and the watchdog put back the previous devices after the layout, best effort. Changing only the sound devices keeps a preset eligible for automatic rules.
 
+## Install
+
+A release made on a Mac that can notarize carries `DisplayMind-<version>.dmg` on the [Releases](https://github.com/chere005/DisplayMind/releases) page: open it and drag DisplayMind to Applications. The image and the app are Developer ID signed, notarized by Apple and stapled, and run on Apple silicon and Intel Macs with macOS 13 or later. Releases without an image are tags only; build those from source.
+
 ## Build
 
-Requires macOS 13 or later and Xcode Command Line Tools with Swift 5.9 or later. The app and helper build for the current Mac's architecture. No downloaded packages, Homebrew, or network access are needed for building after cloning.
+Requires macOS 13 or later and Xcode with Swift 5.9 or later. A release build is universal (Apple silicon and Intel) with a macOS 13 deployment target; `DISPLAYMIND_NATIVE=1` or `tools/build.sh debug` builds for this Mac only and works with the Command Line Tools alone. No downloaded packages, Homebrew, or network access are needed for building after cloning.
 
 ```sh
 tools/preflight.sh
@@ -52,11 +56,13 @@ tools/install.sh
 open /Applications/DisplayMind.app
 ```
 
-The output is `dist/DisplayMind.app`. Signing: `DISPLAYMIND_SIGNING_IDENTITY` if set (`-` forces ad hoc); otherwise the login keychain's only `Developer ID Application` identity, with hardened runtime and a secure timestamp; otherwise ad hoc. A stable identity keeps the Accessibility grant across rebuilds (an ad-hoc signature changes each build). The build prints which kind was used. This repository does not provide a notarized distribution. A debug build is available with `tools/build.sh debug`.
+The output is `dist/DisplayMind.app`. Signing: `DISPLAYMIND_SIGNING_IDENTITY` if set (`-` forces ad hoc); otherwise the login keychain's only `Developer ID Application` identity, with hardened runtime and a secure timestamp; otherwise ad hoc. A stable identity keeps the Accessibility grant across rebuilds (an ad-hoc signature changes each build). The build prints the architectures and which kind of signature was used.
 
 `tools/install.sh [dir]` installs into `/Applications` or `dir`, updating an existing copy in place. It refuses while a display change is pending, quits a running app (and relaunches it), and keeps the previous bundle until the new one passes `--diagnostics`, restoring it otherwise.
 
-Release: `tools/tdtp.sh` (full preflight) or `tools/dtp.sh` (build, `--diagnostics`, watchdog check) from a clean `main`. It bumps the minor version and build number (or reuses an untagged bump), commits, tags `vX.Y.0`, pushes atomically, installs, and reports to the status page. `--dry-run` prints the mutating commands.
+`tools/dmg.sh` packages `dist/DisplayMind.app` as `dist/DisplayMind-<version>.dmg`: it notarizes and staples the app, builds and signs the image, notarizes and staples that, and checks Gatekeeper's verdict on both. `--publish` attaches it to the GitHub release for the version's tag; `--unnotarized` builds an image to look at without notarizing. Notarization needs a notarytool keychain profile named `DisplayMind` (or `DISPLAYMIND_NOTARY_PROFILE` / `APPLE_KEYCHAIN_PROFILE`), which its Apple ID's owner creates once with `xcrun notarytool store-credentials`.
+
+Release: `tools/tdtp.sh` (full preflight) or `tools/dtp.sh` (build, `--diagnostics`, watchdog check) from a clean `main`. It bumps the minor version and build number (or reuses an untagged bump), builds the notarized disk image when the profile exists, commits, tags `vX.Y.0`, pushes atomically, publishes the image with a GitHub release, installs, and reports to the status page. Without the profile the release is a tag with no image, and the lane says so. `--dry-run` prints the mutating commands.
 
 ## Storage and privacy
 
