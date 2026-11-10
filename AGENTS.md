@@ -15,4 +15,3 @@ The baseline for all of Sean's repos lives in ~/GIT/AgentSuite/AGENTS.md and is 
 - A SwiftUI menu-style `Picker` is as wide as its longest item and ignores `frame`; use `PopUp`/`Segments` in `Controls.swift` wherever controls must line up or a name can be long.
 - Standard controls keep the system accent; brand colour is `Branding.fill` (fills, with white text) and `Branding.text` (labels), never a root `.tint`.
 - AirPlay control is Accessibility scripting of Control Center and its controls change between macOS releases: check them with `--airplay-probe` before changing `AirPlayController`, and test connect/disconnect with `--airplay-connect`/`--airplay-disconnect`, each launched through `open -n -g dist/DisplayMind.app --args …` so the app's own grant applies (a shell-launched binary is not trusted).
-
