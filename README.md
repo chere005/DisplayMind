@@ -48,7 +48,11 @@ tools/install.sh
 open /Applications/DisplayMind.app
 ```
 
-The output is `dist/DisplayMind.app`, signed locally with an ad-hoc signature by default. Set `DISPLAYMIND_SIGNING_IDENTITY` to a code-signing identity to preserve the application's identity for Accessibility permissions across updates. This repository does not provide a notarized distribution. `tools/install.sh` refuses to overwrite an existing installation. A debug build is available with `tools/build.sh debug`.
+The output is `dist/DisplayMind.app`. Signing: `DISPLAYMIND_SIGNING_IDENTITY` if set (`-` forces ad hoc); otherwise the login keychain's only `Developer ID Application` identity, with hardened runtime and a secure timestamp; otherwise ad hoc. A stable identity keeps the Accessibility grant across rebuilds (an ad-hoc signature changes each build). The build prints which kind was used. This repository does not provide a notarized distribution. A debug build is available with `tools/build.sh debug`.
+
+`tools/install.sh [dir]` installs into `/Applications` or `dir`, updating an existing copy in place. It refuses while a display change is pending, quits a running app (and relaunches it), and keeps the previous bundle until the new one passes `--diagnostics`, restoring it otherwise.
+
+Release: `tools/tdtp.sh` (full preflight) or `tools/dtp.sh` (build, `--diagnostics`, watchdog check) from a clean `main`. It bumps the minor version and build number (or reuses an untagged bump), commits, tags `vX.Y.0`, pushes atomically, installs, and reports to the status page. `--dry-run` prints the mutating commands.
 
 ## Storage and privacy
 
