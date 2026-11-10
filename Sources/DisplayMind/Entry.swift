@@ -89,6 +89,10 @@ struct MenuContent: View {
     @Environment(\.openWindow) private var openWindow
     var body: some View {
         Text(store.status)
+        if let message = store.menuError {
+            Text("⚠︎ " + message)
+            Button("Dismiss error", action: store.dismissMenuError)
+        }
         Divider()
         if store.pending != nil {
             Button("Keep changes (\(store.secondsRemaining)s)", action: store.keep)

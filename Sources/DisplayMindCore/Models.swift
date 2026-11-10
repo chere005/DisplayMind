@@ -26,6 +26,11 @@ public struct DisplaySetting: Codable, Equatable, Identifiable {
         self.id = id; self.name = name; self.mode = mode; self.rotation = rotation
         self.x = x; self.y = y; self.mirrorOf = mirrorOf; self.enabled = enabled
     }
+    /// Equal in everything macOS applies; the display's name is a label only.
+    public func sameLayout(as other: DisplaySetting) -> Bool {
+        var a = self; a.name = other.name
+        return a == other
+    }
 }
 
 public struct ConnectedDisplay: Identifiable, Equatable {
@@ -131,6 +136,10 @@ public enum Configuration {
                 throw DisplayMindError("Choose an AirPlay receiver and its enabled display in this preset.")
             }
         }
+    }
+
+    public static func sameLayout(_ a: [DisplaySetting], _ b: [DisplaySetting]) -> Bool {
+        a.count == b.count && zip(a, b).allSatisfy { $0.sameLayout(as: $1) }
     }
 
     public static func availability(_ preset: Preset, connected: Set<String>, allowAirPlayConnection: Bool = true) -> String? {

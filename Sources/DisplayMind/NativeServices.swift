@@ -130,21 +130,53 @@ struct RecoveryController {
             try write(journal)
         }
     }
-    func arm(previous: [DisplaySetting], setupTimeout: TimeInterval = 65) throws -> RecoveryJournal {
+    func arm(previous: [DisplaySetting], setupTimeout: TimeInterval = 65, launch: (URL) throws -> Void = RecoveryController.launchWatchdog) throws -> RecoveryJournal {
         try Configuration.validate(previous)
         let journal = RecoveryJournal(deadline: Date().addingTimeInterval(setupTimeout), previous: previous)
         try withLock {
             guard !FileManager.default.fileExists(atPath: pendingURL.path) else { throw DisplayMindError("A display change is already awaiting confirmation.") }
             try? FileManager.default.removeItem(at: resultURL)
+            supersedeSnapshots()
             try write(journal)
         }
+        do { try launch(directory) } catch { try? FileManager.default.removeItem(at: pendingURL); throw error }
+        return journal
+    }
+    /// The independent rollback process: this executable in `--watchdog` mode.
+    static func launchWatchdog(_ directory: URL) throws {
         let process = Process()
         process.executableURL = Bundle.main.executableURL
         process.arguments = ["--watchdog", directory.path]
         process.standardOutput = FileHandle.nullDevice
         process.standardError = FileHandle.nullDevice
-        do { try process.run() } catch { try? FileManager.default.removeItem(at: pendingURL); throw error }
-        return journal
+        try process.run()
+    }
+    private func snapshots() -> [URL] {
+        ((try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: [.contentModificationDateKey])) ?? [])
+            .filter { $0.lastPathComponent.hasPrefix("restoring-") && $0.pathExtension == "json" }
+    }
+    /// A new change replaces any earlier snapshot; keep it for the user but never resume it automatically.
+    private func supersedeSnapshots() {
+        for url in snapshots() {
+            try? FileManager.default.moveItem(at: url, to: directory.appendingPathComponent("superseded-" + url.lastPathComponent.dropFirst("restoring-".count)))
+        }
+    }
+    /// A `restoring-*.json` that no result accounts for: the watchdog died after claiming the journal.
+    func orphanedRestore(maxAge: TimeInterval = 3600) -> RecoveryJournal? {
+        let settled = result()?.id
+        for url in snapshots() {
+            guard let journal = try? JSONDecoder().decode(RecoveryJournal.self, from: Data(contentsOf: url)), journal.id != settled,
+                  let modified = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate,
+                  Date().timeIntervalSince(modified) < maxAge else { continue }
+            return journal
+        }
+        return nil
+    }
+    /// Marks a failed result as shown. The `restoring-*.json` snapshot stays.
+    func acknowledge() {
+        guard var result = result(), result.error != nil, result.acknowledged != true else { return }
+        result.acknowledged = true
+        if let data = try? JSONEncoder().encode(result) { try? data.write(to: resultURL, options: .atomic) }
     }
     func keep(id: UUID) throws {
         try withLock {
@@ -171,31 +203,38 @@ struct RecoveryController {
                     try FileManager.default.moveItem(at: pendingURL, to: claimed)
                 }
             } catch { if read() != nil { continue }; return }
-            var failure: String?
-            if let target = journal.startedAirPlay {
-                do { try disconnectAirPlay(target) }
-                catch { failure = "Could not stop the AirPlay connection started by this change: \(error.localizedDescription)" }
-            }
-            do {
-                let actual = try backend.read()
-                let connected = Set(actual.map(\.id))
-                var previous = journal.previous.filter { connected.contains($0.id) }
-                guard !previous.isEmpty else { throw DisplayMindError("The previous displays are disconnected. Use macOS Display Settings to choose the available layout.") }
-                for i in previous.indices {
-                    if let parent = previous[i].mirrorOf, !connected.contains(parent) { previous[i].mirrorOf = nil }
-                }
-                if !previous.contains(where: { $0.enabled && $0.mirrorOf == nil && $0.x == 0 && $0.y == 0 }),
-                   let first = previous.first(where: { $0.enabled && $0.mirrorOf == nil }) {
-                    Configuration.makeMain(first.id, displays: &previous)
-                }
-                if !Configuration.matches(previous, actual: actual.map(\.setting)) { try backend.apply(previous) }
-                let restored = try backend.read()
-                guard Configuration.matches(previous, actual: restored.map(\.setting)) else { throw DisplayMindError("macOS did not restore every display setting. Open Display Settings to recover the layout.") }
-            } catch { failure = [failure, error.localizedDescription].compactMap { $0 }.joined(separator: " ") }
-            let result = RecoveryResult(id: journal.id, error: failure)
-            if let data = try? JSONEncoder().encode(result) { try? data.write(to: resultURL, options: .atomic) }
-            if failure == nil { try? FileManager.default.removeItem(at: claimed) }
+            restore(journal, claimed: claimed, backend: backend, disconnectAirPlay: disconnectAirPlay)
             return
         }
+    }
+    /// Resumes a restore whose watchdog died after claiming the journal.
+    func resume(_ journal: RecoveryJournal, backend: DisplayBackend, disconnectAirPlay: (AirPlayDestination) throws -> Void = { try AirPlayController().setConnected($0, false) }) {
+        restore(journal, claimed: directory.appendingPathComponent("restoring-\(journal.id).json"), backend: backend, disconnectAirPlay: disconnectAirPlay)
+    }
+    private func restore(_ journal: RecoveryJournal, claimed: URL, backend: DisplayBackend, disconnectAirPlay: (AirPlayDestination) throws -> Void) {
+        var failure: String?
+        if let target = journal.startedAirPlay {
+            do { try disconnectAirPlay(target) }
+            catch { failure = "Could not stop the AirPlay connection started by this change: \(error.localizedDescription)" }
+        }
+        do {
+            let actual = try backend.read()
+            let connected = Set(actual.map(\.id))
+            var previous = journal.previous.filter { connected.contains($0.id) }
+            guard !previous.isEmpty else { throw DisplayMindError("The previous displays are disconnected. Use macOS Display Settings to choose the available layout.") }
+            for i in previous.indices {
+                if let parent = previous[i].mirrorOf, !connected.contains(parent) { previous[i].mirrorOf = nil }
+            }
+            if !previous.contains(where: { $0.enabled && $0.mirrorOf == nil && $0.x == 0 && $0.y == 0 }),
+               let first = previous.first(where: { $0.enabled && $0.mirrorOf == nil }) {
+                Configuration.makeMain(first.id, displays: &previous)
+            }
+            if !Configuration.matches(previous, actual: actual.map(\.setting)) { try backend.apply(previous) }
+            let restored = try backend.read()
+            guard Configuration.matches(previous, actual: restored.map(\.setting)) else { throw DisplayMindError("macOS did not restore every display setting. Open Display Settings to recover the layout.") }
+        } catch { failure = [failure, error.localizedDescription].compactMap { $0 }.joined(separator: " ") }
+        let result = RecoveryResult(id: journal.id, error: failure)
+        if let data = try? JSONEncoder().encode(result) { try? data.write(to: resultURL, options: .atomic) }
+        if failure == nil { try? FileManager.default.removeItem(at: claimed) }
     }
 }

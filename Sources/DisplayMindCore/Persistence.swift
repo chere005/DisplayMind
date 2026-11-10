@@ -33,5 +33,7 @@ public struct RecoveryJournal: Codable {
 public struct RecoveryResult: Codable {
     public var id: UUID
     public var error: String?
-    public init(id: UUID, error: String?) { self.id = id; self.error = error }
+    /// Set once a failed result has been shown to the user, so it is not shown again at every launch.
+    public var acknowledged: Bool?
+    public init(id: UUID, error: String?, acknowledged: Bool? = nil) { self.id = id; self.error = error; self.acknowledged = acknowledged }
 }
