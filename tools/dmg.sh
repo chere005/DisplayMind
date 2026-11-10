@@ -1,6 +1,6 @@
 #!/bin/sh
 # Package dist/DisplayMind.app as a disk image another Mac opens without warnings:
-# Developer ID signed, notarized by Apple and stapled, for Apple silicon and Intel.
+# Developer ID signed, notarized by Apple and stapled, for Apple silicon.
 #
 #   tools/dmg.sh                 build dist/DisplayMind-<version>.dmg (notarized)
 #   tools/dmg.sh --publish       ...and attach it to the GitHub release for the tag v<version>
@@ -51,12 +51,9 @@ notarize() {
 }
 
 if [ "$BUILD" = 1 ]; then
-  # What ships must run on both kinds of Mac and carry a real signature.
+  # What ships must target Apple silicon only and carry a real signature.
   for BINARY in "$APP/Contents/MacOS/DisplayMind" "$APP/Contents/MacOS/displayplacer"; do
-    case "$(lipo -archs "$BINARY")" in
-      *arm64*x86_64*|*x86_64*arm64*) ;;
-      *) die "$BINARY is not universal; build with tools/build.sh release (without DISPLAYMIND_NATIVE)" ;;
-    esac
+    [ "$(lipo -archs "$BINARY")" = arm64 ] || die "$BINARY must contain only arm64; build with tools/build.sh release"
   done
   codesign --verify --deep --strict "$APP"
   case "$(codesign -dv "$APP" 2>&1)" in *Signature=adhoc*) die 'the app is ad hoc signed; a Developer ID Application identity is needed' ;; esac
@@ -105,7 +102,7 @@ if [ "$PUBLISH" = 1 ]; then
   PREVIOUS=$(git tag -l 'v[0-9]*' --sort=-v:refname | grep -v -x "$TAG" | head -1)
   NOTES=$(mktemp "${TMPDIR:-/tmp}/DisplayMind-notes.XXXXXX")
   {
-    printf 'Open the disk image and drag DisplayMind to Applications. macOS 13 or later, Apple silicon and Intel.\n\n'
+    printf 'Open the disk image and drag DisplayMind to Applications. macOS 13 or later, Apple silicon.\n\n'
     if [ -n "$PREVIOUS" ]; then git log --format='- %s' "$PREVIOUS..$TAG" | grep -v -E '^- DisplayMind [0-9]+\.[0-9]+\.[0-9]+$' || true; fi
     printf '\nSHA-256 `%s`\n' "$SUM"
   } > "$NOTES"
