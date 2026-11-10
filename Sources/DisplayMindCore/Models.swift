@@ -44,8 +44,10 @@ public struct Preset: Codable, Equatable, Identifiable {
     public var name: String
     public var displays: [DisplaySetting]
     public var confirmed: Bool
-    public init(id: UUID = UUID(), name: String, displays: [DisplaySetting], confirmed: Bool = false) {
+    public var airPlay: AirPlayDestination?
+    public init(id: UUID = UUID(), name: String, displays: [DisplaySetting], confirmed: Bool = false, airPlay: AirPlayDestination? = nil) {
         self.id = id; self.name = name; self.displays = displays; self.confirmed = confirmed
+        self.airPlay = airPlay
     }
 }
 
@@ -119,8 +121,21 @@ public enum Configuration {
         }
     }
 
-    public static func availability(_ preset: Preset, connected: Set<String>) -> String? {
-        let missing = preset.displays.filter { !connected.contains($0.id) }
+    public static func validate(_ preset: Preset) throws {
+        try validate(preset.displays)
+        if let target = preset.airPlay {
+            guard !target.receiverName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  target.receiverName.count <= 256,
+                  !target.receiverName.contains(where: { $0.isNewline }),
+                  preset.displays.contains(where: { $0.id == target.displayID && $0.enabled }) else {
+                throw DisplayMindError("Choose an AirPlay receiver and its enabled display in this preset.")
+            }
+        }
+    }
+
+    public static func availability(_ preset: Preset, connected: Set<String>, allowAirPlayConnection: Bool = true) -> String? {
+        let wirelessID = allowAirPlayConnection ? preset.airPlay?.displayID : nil
+        let missing = preset.displays.filter { !connected.contains($0.id) && $0.id != wirelessID }
         return missing.isEmpty ? nil : "Connect " + missing.map(\.name).joined(separator: ", ")
     }
 
@@ -155,7 +170,8 @@ public enum RuleEngine {
                   Configuration.availability(preset, connected: displayIDs) == nil,
                   rule.requiredDevices.allSatisfy({ ids.contains($0.id) }),
                   rule.absentDevices.allSatisfy({ !ids.contains($0.id) }) else { return false }
-            return !rule.exactDisplays || displayIDs == Set(preset.displays.map(\.id))
+            let wireless = Set([preset.airPlay?.displayID].compactMap { $0 })
+            return !rule.exactDisplays || displayIDs.subtracting(wireless) == Set(preset.displays.map(\.id)).subtracting(wireless)
         }
     }
 }
@@ -166,6 +182,10 @@ public struct ConnectionGate {
     private var consumed: Set<String>?
     public init() {}
     public mutating func reset() { candidate = nil; consumed = nil }
+    /// A preset can itself add/remove an AirPlay display; do not treat that as a new external trigger.
+    public mutating func consume(_ devices: [Device], now: Date) {
+        let ids = Set(devices.map(\.id)); candidate = ids; consumed = ids; since = now
+    }
     public mutating func shouldEvaluate(_ devices: [Device], now: Date, settle: TimeInterval = 3) -> Bool {
         let ids = Set(devices.map(\.id))
         if candidate != ids { candidate = ids; since = now }

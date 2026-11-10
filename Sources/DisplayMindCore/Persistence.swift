@@ -10,7 +10,7 @@ public struct SettingsFile {
         guard settings.schemaVersion == 1 else { throw DisplayMindError("These settings were created by a newer DisplayMind. The file has been preserved.") }
         guard Set(settings.presets.map(\.id)).count == settings.presets.count,
               Set(settings.rules.map(\.id)).count == settings.rules.count else { throw DisplayMindError("Duplicate identifiers in settings. The file has been preserved.") }
-        for preset in settings.presets { try Configuration.validate(preset.displays) }
+        for preset in settings.presets { try Configuration.validate(preset) }
         return settings
     }
     public func save(_ settings: AppSettings) throws {
@@ -24,6 +24,7 @@ public struct RecoveryJournal: Codable {
     public var id: UUID
     public var deadline: Date
     public var previous: [DisplaySetting]
+    public var startedAirPlay: AirPlayDestination?
     public init(id: UUID = UUID(), deadline: Date, previous: [DisplaySetting]) {
         self.id = id; self.deadline = deadline; self.previous = previous
     }

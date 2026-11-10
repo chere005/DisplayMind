@@ -75,4 +75,32 @@ final class RecoveryTests: XCTestCase {
     func testProcessTimeoutStopsOnlyItsOwnChild() {
         XCTAssertThrowsError(try ProcessRunner.run(URL(fileURLWithPath: "/bin/sleep"), arguments: ["2"], timeout: 0.05))
     }
+    func testRecoveryDisconnectsOnlyTheStreamStartedByTheChange() throws {
+        let backend = try fakeBackend(current: layout(), restored: layout())
+        let recovery = RecoveryController(directory: dir)
+        var journal = RecoveryJournal(deadline: Date().addingTimeInterval(60), previous: layout())
+        try writeJournal(journal)
+        let target = AirPlayDestination(receiverName: "TV", displayID: displayB)
+        try recovery.markAirPlayStarted(id: journal.id, target: target)
+        try recovery.requestRevert()
+        var disconnected: [AirPlayDestination] = []
+        recovery.watch(backend: backend, disconnectAirPlay: { disconnected.append($0) })
+        XCTAssertEqual(disconnected, [target]); XCTAssertNil(recovery.result()?.error)
+        journal = RecoveryJournal(deadline: .distantPast, previous: layout())
+        try writeJournal(journal)
+        recovery.watch(backend: backend, disconnectAirPlay: { _ in XCTFail("Existing AirPlay streams must remain connected") })
+        XCTAssertNil(recovery.result()?.error)
+    }
+    func testDisconnectFailureStillRestoresLayoutAndPreservesRecoverySnapshot() throws {
+        var changed = layout(); changed[1].rotation = 270
+        let backend = try fakeBackend(current: changed, restored: layout())
+        var journal = RecoveryJournal(deadline: .distantPast, previous: layout())
+        journal.startedAirPlay = AirPlayDestination(receiverName: "TV", displayID: displayB)
+        try writeJournal(journal)
+        let recovery = RecoveryController(directory: dir)
+        recovery.watch(backend: backend, disconnectAirPlay: { _ in throw DisplayMindError("Permission revoked") })
+        XCTAssertTrue(recovery.result()?.error?.contains("Permission revoked") == true)
+        XCTAssertTrue(try String(contentsOf: dir.appendingPathComponent("applied.txt")).contains("degree:90"))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: dir.appendingPathComponent("restoring-\(journal.id).json").path))
+    }
 }

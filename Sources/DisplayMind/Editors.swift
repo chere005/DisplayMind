@@ -20,6 +20,9 @@ struct PresetEditor: View {
                 Text("Changes apply when you choose Apply preset.").font(.caption).foregroundStyle(.secondary)
             }
             TextField("Preset name", text: $draft.name).textFieldStyle(.roundedBorder).font(.title3)
+            ScrollView {
+            VStack(alignment: .leading, spacing: 18) {
+            airPlayControls
             DisplayDiagram(displays: draft.displays, moved: { id, x, y in
                 if let i = draft.displays.firstIndex(where: { $0.id == id }) {
                     draft.displays[i].x = min(100_000, max(-100_000, x)); draft.displays[i].y = min(100_000, max(-100_000, y))
@@ -32,6 +35,8 @@ struct PresetEditor: View {
                 displayControls(index)
             }
             if let validation { Text(validation).foregroundStyle(.red).font(.callout) }
+            }
+            }.frame(maxHeight: .infinity)
             Divider()
             HStack {
                 Text("Applying a new layout gives you 20 seconds to keep it.").font(.caption).foregroundStyle(.secondary)
@@ -39,13 +44,64 @@ struct PresetEditor: View {
                 Button("Cancel") { store.editorPreset = nil }.keyboardShortcut(.cancelAction)
                 Button("Save preset") {
                     do {
-                        try Configuration.validate(draft.displays)
-                        if draft.displays != original.displays { draft.confirmed = false }
+                        try Configuration.validate(draft)
+                        if draft.displays != original.displays || draft.airPlay != original.airPlay { draft.confirmed = false }
                         store.save(draft)
                     } catch { validation = error.localizedDescription }
                 }.buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction).disabled(draft.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
-        }.padding(26).frame(width: 740).background(Color(nsColor: .windowBackgroundColor))
+        }.padding(26).frame(width: 740, height: 720).background(Color(nsColor: .windowBackgroundColor))
+            .alert("DisplayMind", isPresented: Binding(get: { store.error != nil }, set: { if !$0 { store.error = nil } })) {
+                Button("OK", role: .cancel) { store.error = nil }
+            } message: { Text(store.error ?? "") }
+    }
+    private var airPlayDisplays: [DisplaySetting] {
+        draft.displays.filter { display in display.enabled && !store.displays.contains(where: { $0.id == display.id && $0.builtIn }) }
+    }
+    private var airPlayControls: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Toggle("Connect AirPlay when applying this preset", isOn: Binding(get: { draft.airPlay != nil }, set: { enabled in
+                if enabled, let display = airPlayDisplays.first {
+                    draft.airPlay = AirPlayDestination(receiverName: display.name, displayID: display.id)
+                } else { draft.airPlay = nil }
+            })).fontWeight(.medium).disabled(airPlayDisplays.isEmpty)
+            if airPlayDisplays.isEmpty {
+                Text("Connect the receiver using macOS Screen Mirroring, then capture that layout to include its display in a preset.")
+                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
+            if let target = draft.airPlay {
+                HStack {
+                    TextField("Receiver name in Screen Mirroring", text: Binding(get: { draft.airPlay?.receiverName ?? "" }, set: {
+                        draft.airPlay?.receiverName = $0; draft.airPlay?.controlIdentifier = nil
+                    })).textFieldStyle(.roundedBorder)
+                    if store.airPlayReceivers.isEmpty {
+                        Button("Find receivers…") { Task { await store.findAirPlayReceivers() } }
+                    } else {
+                        Menu("Choose receiver") {
+                            ForEach(store.airPlayReceivers) { receiver in
+                                Button(receiver.name + (receiver.selected == true ? " (connected)" : "")) {
+                                    draft.airPlay?.receiverName = receiver.name
+                                    draft.airPlay?.controlIdentifier = receiver.id
+                                }
+                            }
+                            Divider()
+                            Button("Refresh receivers…") { Task { await store.findAirPlayReceivers() } }
+                        }.fixedSize()
+                    }
+                    if store.airPlayScanning { ProgressView().controlSize(.small) }
+                }.disabled(store.airPlayScanning)
+                Picker("Saved AirPlay display", selection: Binding(get: { target.displayID }, set: { draft.airPlay?.displayID = $0 })) {
+                    ForEach(airPlayDisplays) { Text($0.name).tag($0.id) }
+                }
+                HStack(alignment: .top) {
+                    Text("Choose the receiver’s display captured in this preset. DisplayMind connects it before arranging your displays.")
+                        .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    if !store.airPlayAuthorized { Button("Allow AirPlay control…", action: store.allowAirPlayControl).font(.caption) }
+                }
+                Text("Find receivers briefly opens Screen Mirroring. A first-time receiver may ask for a pairing code.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        }.padding(14).background(Color.accentColor.opacity(0.045), in: RoundedRectangle(cornerRadius: 10))
     }
     @ViewBuilder private func displayControls(_ index: Int) -> some View {
         let display = draft.displays[index]
@@ -158,6 +214,10 @@ struct RuleEditor: View {
             if let preset = store.settings.presets.first(where: { $0.id == draft.presetID }), !preset.confirmed {
                 Label("Apply and keep this preset once before the rule can run.", systemImage: "info.circle").font(.callout).foregroundStyle(.orange)
             }
+            if let preset = store.settings.presets.first(where: { $0.id == draft.presetID }), let target = preset.airPlay {
+                Text("This preset connects \(target.receiverName) automatically. Use a dock or another display as the trigger; requiring the AirPlay display to be connected would wait for a manual connection.")
+                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
             Text("WHEN ALL THESE CONDITIONS MATCH").font(.system(size: 10, weight: .semibold)).foregroundStyle(.secondary)
             ScrollView {
                 VStack(spacing: 14) {
@@ -178,7 +238,7 @@ struct RuleEditor: View {
                 }.padding(.vertical, 4)
             }.frame(minHeight: 120, maxHeight: 260)
             Toggle("Require exactly this preset’s displays (no additional displays)", isOn: $draft.exactDisplays)
-            Text("All displays used by the preset must be connected. Rules wait for connections to settle, then apply once per connection change. Manual switching lasts until devices change again.")
+            Text("Displays must already be connected unless this preset connects them through AirPlay. Rules wait for connections to settle, then apply once per connection change. Manual switching lasts until devices change again.")
                 .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             Divider()
             HStack {

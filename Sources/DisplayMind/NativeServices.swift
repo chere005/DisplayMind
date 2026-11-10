@@ -38,6 +38,15 @@ struct DisplayBackend {
 }
 
 enum Hardware {
+    static func connectedDisplayIDs() -> Set<String> {
+        var displays = [CGDirectDisplayID](repeating: 0, count: 32)
+        var count: UInt32 = 0
+        guard CGGetOnlineDisplayList(32, &displays, &count) == .success else { return [] }
+        return Set(displays.prefix(Int(count)).compactMap { display in
+            guard let uuid = CGDisplayCreateUUIDFromDisplayID(display)?.takeRetainedValue() else { return nil }
+            return CFUUIDCreateString(nil, uuid)! as String
+        })
+    }
     static func devices() -> [Device] {
         var result: [Device] = []
         var displays = [CGDirectDisplayID](repeating: 0, count: 32)
@@ -112,9 +121,18 @@ struct RecoveryController {
             try write(journal)
         }
     }
-    func arm(previous: [DisplaySetting]) throws -> RecoveryJournal {
+    func markAirPlayStarted(id: UUID, target: AirPlayDestination) throws {
+        try withLock {
+            guard var journal = read(), journal.id == id, journal.deadline > Date() else {
+                throw DisplayMindError("The display change has already started reverting.")
+            }
+            journal.startedAirPlay = target
+            try write(journal)
+        }
+    }
+    func arm(previous: [DisplaySetting], setupTimeout: TimeInterval = 65) throws -> RecoveryJournal {
         try Configuration.validate(previous)
-        let journal = RecoveryJournal(deadline: Date().addingTimeInterval(65), previous: previous)
+        let journal = RecoveryJournal(deadline: Date().addingTimeInterval(setupTimeout), previous: previous)
         try withLock {
             guard !FileManager.default.fileExists(atPath: pendingURL.path) else { throw DisplayMindError("A display change is already awaiting confirmation.") }
             try? FileManager.default.removeItem(at: resultURL)
@@ -143,7 +161,7 @@ struct RecoveryController {
     }
     func result() -> RecoveryResult? { try? JSONDecoder().decode(RecoveryResult.self, from: Data(contentsOf: resultURL)) }
 
-    func watch(backend: DisplayBackend) {
+    func watch(backend: DisplayBackend, disconnectAirPlay: (AirPlayDestination) throws -> Void = { try AirPlayController().setConnected($0, false) }) {
         while let journal = read() {
             if journal.deadline > Date() { Thread.sleep(forTimeInterval: 0.25); continue }
             let claimed = directory.appendingPathComponent("restoring-\(journal.id).json")
@@ -154,6 +172,10 @@ struct RecoveryController {
                 }
             } catch { if read() != nil { continue }; return }
             var failure: String?
+            if let target = journal.startedAirPlay {
+                do { try disconnectAirPlay(target) }
+                catch { failure = "Could not stop the AirPlay connection started by this change: \(error.localizedDescription)" }
+            }
             do {
                 let actual = try backend.read()
                 let connected = Set(actual.map(\.id))
@@ -169,7 +191,7 @@ struct RecoveryController {
                 if !Configuration.matches(previous, actual: actual.map(\.setting)) { try backend.apply(previous) }
                 let restored = try backend.read()
                 guard Configuration.matches(previous, actual: restored.map(\.setting)) else { throw DisplayMindError("macOS did not restore every display setting. Open Display Settings to recover the layout.") }
-            } catch { failure = error.localizedDescription }
+            } catch { failure = [failure, error.localizedDescription].compactMap { $0 }.joined(separator: " ") }
             let result = RecoveryResult(id: journal.id, error: failure)
             if let data = try? JSONEncoder().encode(result) { try? data.write(to: resultURL, options: .atomic) }
             if failure == nil { try? FileManager.default.removeItem(at: claimed) }

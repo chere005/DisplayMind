@@ -18,11 +18,18 @@ enum Entry {
                 exit(0)
             } catch { fputs("\(error.localizedDescription)\n", stderr); exit(1) }
         }
+        if CommandLine.arguments.contains("--airplay-access-status") {
+            print(AirPlayController.authorized ? "AirPlay Accessibility access: allowed" : "AirPlay Accessibility access: not allowed")
+            exit(0)
+        }
         if let index = CommandLine.arguments.firstIndex(of: "--render-preview"), CommandLine.arguments.count > index + 1 {
             let app = NSApplication.shared
             app.setActivationPolicy(.prohibited)
             let store = Store(directory: URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("DisplayMind-preview"), demo: true)
             if CommandLine.arguments.contains("--rules") { store.showRules = true }
+            if CommandLine.arguments.contains("--airplay") {
+                store.settings.presets[0].airPlay = AirPlayDestination(receiverName: "Living Room TV", displayID: store.settings.presets[0].displays[1].id)
+            }
             let content: AnyView
             if CommandLine.arguments.contains("--editor") { content = AnyView(PresetEditor(store: store, original: store.settings.presets[0])) }
             else if CommandLine.arguments.contains("--rule-editor") { content = AnyView(RuleEditor(store: store, original: store.settings.rules[0])) }
@@ -64,7 +71,7 @@ struct DisplayMindApp: App {
         Window("DisplayMind", id: "main") {
             WindowContent(store: store).tint(Color(red: 0.12, green: 0.48, blue: 0.58))
         }.defaultSize(width: 1080, height: 760).windowResizability(.contentMinSize)
-        MenuBarExtra("DisplayMind", systemImage: "display.2") { MenuContent(store: store) }
+        MenuBarExtra { MenuContent(store: store) } label: { Image(nsImage: Branding.menuIcon).accessibilityLabel("DisplayMind") }
     }
 }
 

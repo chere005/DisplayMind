@@ -65,7 +65,7 @@ struct MainView: View {
     private var sidebar: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 10) {
-                Image(systemName: "display.2").font(.system(size: 24)).foregroundStyle(Color.accentColor)
+                Image(nsImage: Branding.logo).resizable().frame(width: 32, height: 32).accessibilityHidden(true)
                 Text("DisplayMind").font(.system(size: 18, weight: .semibold, design: .rounded))
             }.padding(22).padding(.top, 8)
             Text("PRESETS").font(.system(size: 10, weight: .semibold)).foregroundStyle(.secondary).padding(.horizontal, 22).padding(.bottom, 10)
@@ -127,6 +127,10 @@ struct MainView: View {
                 if !preset.confirmed { Label("Apply once to enable rules", systemImage: "info.circle").font(.caption).foregroundStyle(.secondary) }
             }
             DisplayDiagram(displays: preset.displays).frame(height: 260)
+            if let target = preset.airPlay {
+                Label("AirPlay → \(target.receiverName)" + (store.connectedIDs.contains(target.displayID) ? " · Connected" : " · Connects when applied"), systemImage: "airplayvideo")
+                    .font(.callout).foregroundStyle(.secondary)
+            }
             HStack(spacing: 10) {
                 Button { Task { await store.apply(preset) } } label: { Label("Apply preset", systemImage: "play.fill").padding(.horizontal, 8) }
                     .buttonStyle(.borderedProminent).controlSize(.large)
@@ -134,7 +138,7 @@ struct MainView: View {
                 Button("Edit layout") { store.editorPreset = preset }.controlSize(.large).disabled(store.busy || store.pending != nil)
                 Menu {
                     Button("Duplicate") { store.duplicate(preset) }
-                    Button("Create connection rule") { store.editorRule = ConnectionRule(name: "Use \(preset.name)", presetID: preset.id, requiredDevices: store.devices.filter { $0.kind == .display }) }
+                    Button("Create connection rule") { store.editorRule = ConnectionRule(name: "Use \(preset.name)", presetID: preset.id, requiredDevices: store.defaultRuleDevices(for: preset)) }
                     Divider()
                     Button("Delete preset…", role: .destructive) { deleting = preset }
                 } label: { Image(systemName: "ellipsis") }.menuStyle(.borderlessButton).frame(width: 24).disabled(store.busy || store.pending != nil)
@@ -211,7 +215,7 @@ struct MainView: View {
     }
     private func newRule() {
         guard let preset = store.selectedPreset ?? store.settings.presets.first else { return }
-        store.editorRule = ConnectionRule(name: "Use \(preset.name)", presetID: preset.id, requiredDevices: store.devices.filter { $0.kind == .display })
+        store.editorRule = ConnectionRule(name: "Use \(preset.name)", presetID: preset.id, requiredDevices: store.defaultRuleDevices(for: preset))
     }
     private func ruleSummary(_ rule: ConnectionRule) -> String {
         var parts: [String] = []

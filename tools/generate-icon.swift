@@ -1,35 +1,59 @@
 import AppKit
 
-// Vector artwork rendered at every standard macOS icon size.
+// DisplayMind's silver DM follows the MindSuite 96-unit, 9-unit rounded-stroke mark.
 let directory = URL(fileURLWithPath: CommandLine.arguments[1], isDirectory: true)
+let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+let assets = root.appendingPathComponent("assets", isDirectory: true)
 try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-func drawIcon() {
-    let background = NSBezierPath(roundedRect: NSRect(x: 42, y: 42, width: 940, height: 940), xRadius: 210, yRadius: 210)
-    NSGradient(starting: NSColor(calibratedRed: 0.12, green: 0.43, blue: 0.54, alpha: 1), ending: NSColor(calibratedRed: 0.06, green: 0.20, blue: 0.32, alpha: 1))!.draw(in: background, angle: -70)
-    NSColor.white.withAlphaComponent(0.9).setFill()
-    NSBezierPath(roundedRect: NSRect(x: 170, y: 330, width: 490, height: 365), xRadius: 35, yRadius: 35).fill()
-    NSColor(calibratedRed: 0.2, green: 0.68, blue: 0.72, alpha: 1).setFill()
-    NSBezierPath(roundedRect: NSRect(x: 192, y: 365, width: 446, height: 308), xRadius: 19, yRadius: 19).fill()
-    NSColor.white.withAlphaComponent(0.9).setFill()
-    NSBezierPath(roundedRect: NSRect(x: 374, y: 270, width: 80, height: 72), xRadius: 9, yRadius: 9).fill()
-    NSBezierPath(roundedRect: NSRect(x: 310, y: 252, width: 210, height: 24), xRadius: 12, yRadius: 12).fill()
-    NSColor(calibratedRed: 0.07, green: 0.25, blue: 0.36, alpha: 1).setFill()
-    NSBezierPath(roundedRect: NSRect(x: 615, y: 280, width: 250, height: 475), xRadius: 36, yRadius: 36).fill()
-    NSColor.white.setFill()
-    NSBezierPath(roundedRect: NSRect(x: 630, y: 296, width: 220, height: 444), xRadius: 25, yRadius: 25).fill()
-    NSColor(calibratedRed: 0.42, green: 0.79, blue: 0.77, alpha: 1).setFill()
-    NSBezierPath(roundedRect: NSRect(x: 648, y: 330, width: 184, height: 392), xRadius: 12, yRadius: 12).fill()
+try FileManager.default.createDirectory(at: assets, withIntermediateDirectories: true)
+let silver = NSColor(srgbRed: 192.0/255, green: 192.0/255, blue: 192.0/255, alpha: 1)
+let pathData = "M 14 26 L 14 70 L 24 70 C 50 70 50 26 24 26 L 14 26 M 54 70 L 54 26 L 68 52 L 82 26 L 82 70"
+for square in [false, true] {
+    let svg = """
+    <svg xmlns="http://www.w3.org/2000/svg" width="96" height="96" viewBox="0 0 96 96">
+      <!-- DisplayMind: silver DM in the MindSuite rounded monogram style. -->
+      <rect width="96" height="96"\(square ? "" : " rx=\"20\"") fill="#111111"/>
+      <path d="\(pathData)" fill="none" stroke="#c0c0c0" stroke-width="9" stroke-linecap="round" stroke-linejoin="round"/>
+    </svg>
+    """ + "\n"
+    try svg.write(to: assets.appendingPathComponent(square ? "logo-square.svg" : "logo.svg"), atomically: true, encoding: .utf8)
+}
+func drawMark(color: NSColor) {
+    let path = NSBezierPath()
+    path.move(to: NSPoint(x: 14, y: 26)); path.line(to: NSPoint(x: 14, y: 70)); path.line(to: NSPoint(x: 24, y: 70))
+    path.curve(to: NSPoint(x: 24, y: 26), controlPoint1: NSPoint(x: 50, y: 70), controlPoint2: NSPoint(x: 50, y: 26))
+    path.line(to: NSPoint(x: 14, y: 26))
+    path.move(to: NSPoint(x: 54, y: 70)); path.line(to: NSPoint(x: 54, y: 26)); path.line(to: NSPoint(x: 68, y: 52))
+    path.line(to: NSPoint(x: 82, y: 26)); path.line(to: NSPoint(x: 82, y: 70))
+    path.lineWidth = 9; path.lineCapStyle = .round; path.lineJoinStyle = .round
+    color.setStroke(); path.stroke()
+}
+func bitmap(pixels: Int) -> Data {
+    let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: pixels, pixelsHigh: pixels, bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
+    NSGraphicsContext.saveGraphicsState()
+    NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: bitmap)
+    let transform = NSAffineTransform(); transform.scale(by: CGFloat(pixels) / 96); transform.translateX(by: 0, yBy: 96); transform.scaleX(by: 1, yBy: -1); transform.concat()
+    NSColor(srgbRed: 17.0/255, green: 17.0/255, blue: 17.0/255, alpha: 1).setFill()
+    NSBezierPath(roundedRect: NSRect(x: 0, y: 0, width: 96, height: 96), xRadius: 20, yRadius: 20).fill()
+    drawMark(color: silver)
+    NSGraphicsContext.restoreGraphicsState()
+    return bitmap.representation(using: .png, properties: [:])!
 }
 for size in [16, 32, 128, 256, 512] {
     for scale in [1, 2] {
-        let pixels = size * scale
-        let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: pixels, pixelsHigh: pixels, bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
-        NSGraphicsContext.saveGraphicsState()
-        NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: bitmap)
-        let transform = NSAffineTransform(); transform.scale(by: CGFloat(pixels) / 1024); transform.concat()
-        drawIcon()
-        NSGraphicsContext.restoreGraphicsState()
-        let name = "icon_\(size)x\(size)\(scale == 2 ? "@2x" : "").png"
-        try bitmap.representation(using: .png, properties: [:])!.write(to: directory.appendingPathComponent(name))
+        try bitmap(pixels: size * scale).write(to: directory.appendingPathComponent("icon_\(size)x\(size)\(scale == 2 ? "@2x" : "").png"))
     }
 }
+try bitmap(pixels: 1024).write(to: assets.appendingPathComponent("logo.png"))
+try bitmap(pixels: 256).write(to: assets.appendingPathComponent("logo-preview.png"))
+let pdf = NSMutableData()
+var mediaBox = CGRect(x: 0, y: 0, width: 96, height: 96)
+let context = CGContext(consumer: CGDataConsumer(data: pdf)!, mediaBox: &mediaBox, nil)!
+context.beginPDFPage(nil)
+NSGraphicsContext.saveGraphicsState()
+NSGraphicsContext.current = NSGraphicsContext(cgContext: context, flipped: false)
+context.translateBy(x: 0, y: 96); context.scaleBy(x: 1, y: -1)
+drawMark(color: .black)
+NSGraphicsContext.restoreGraphicsState()
+context.endPDFPage(); context.closePDF()
+try (pdf as Data).write(to: root.appendingPathComponent("Resources/MenuBarIcon.pdf"))

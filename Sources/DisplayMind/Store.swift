@@ -17,6 +17,9 @@ import ServiceManagement
     @Published var showRules = false
     @Published var editorPreset: Preset?
     @Published var editorRule: ConnectionRule?
+    @Published var airPlayReceivers: [AirPlayReceiver] = []
+    @Published var airPlayScanning = false
+    @Published var airPlayAuthorized = AirPlayController.authorized
     let settingsFile: SettingsFile
     let backend: DisplayBackend
     let recovery: RecoveryController
@@ -66,6 +69,24 @@ import ServiceManagement
     }
     func unavailable(_ preset: Preset) -> String? { Configuration.availability(preset, connected: connectedIDs) }
     func report(_ error: Error) { self.error = error.localizedDescription }
+    func allowAirPlayControl() {
+        AirPlayController.requestAccess()
+        airPlayAuthorized = AirPlayController.authorized
+    }
+    func findAirPlayReceivers() async {
+        guard !busy, !airPlayScanning, pending == nil else { return }
+        airPlayAuthorized = AirPlayController.authorized
+        guard airPlayAuthorized else { allowAirPlayControl(); return }
+        airPlayScanning = true
+        defer { airPlayScanning = false }
+        do {
+            airPlayReceivers = try await Task.detached { try AirPlayController().receivers() }.value
+            if airPlayReceivers.isEmpty { error = "No AirPlay receivers are visible in Screen Mirroring. You can enter a receiver’s exact name instead." }
+        } catch { report(error) }
+    }
+    func defaultRuleDevices(for preset: Preset) -> [Device] {
+        devices.filter { $0.kind == .display && $0.id != "display:\(preset.airPlay?.displayID ?? "")" }
+    }
     private func persist(_ updated: AppSettings) -> Bool {
         guard writable else { error = "The existing settings file could not be read. It has been preserved in ~/DisplayMind."; return false }
         do { try settingsFile.save(updated); settings = updated; return true }
@@ -91,16 +112,20 @@ import ServiceManagement
         } catch { report(error) }
     }
     func save(_ preset: Preset) {
-        do { try Configuration.validate(preset.displays) } catch { report(error); return }
+        do { try Configuration.validate(preset) } catch { report(error); return }
+        if let target = preset.airPlay, displays.contains(where: { $0.id == target.displayID && $0.builtIn }) {
+            error = "Choose the receiver's display as the saved AirPlay display, rather than the Mac's built-in display."
+            return
+        }
         var preset = preset
         preset.name = preset.name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !preset.name.isEmpty else { error = "Give this preset a name."; return }
         var updated = settings
         if let i = updated.presets.firstIndex(where: { $0.id == preset.id }) {
-            if preset.displays != updated.presets[i].displays { preset.confirmed = false }
+            if preset.displays != updated.presets[i].displays || preset.airPlay != updated.presets[i].airPlay { preset.confirmed = false }
             updated.presets[i] = preset
         } else {
-            preset.confirmed = preset.confirmed && Configuration.matches(preset.displays, actual: displays.map(\.setting))
+            preset.confirmed = preset.confirmed && preset.airPlay == nil && Configuration.matches(preset.displays, actual: displays.map(\.setting))
             updated.presets.append(preset)
         }
         if persist(updated) { selectedPresetID = preset.id; showRules = false; editorPreset = nil; gate.reset() }
@@ -145,12 +170,13 @@ import ServiceManagement
     }
 
     func apply(_ preset: Preset, automatic: Bool = false) async {
-        guard !busy, pending == nil else { return }
+        guard !busy, !airPlayScanning, pending == nil else { return }
         busy = true
         applyFailure = nil
         status = "Applying \(preset.name)…"
         do {
             let backend = self.backend
+            try Configuration.validate(preset)
             let current = try await Task.detached { try backend.read() }.value
             if let reason = Configuration.availability(preset, connected: Set(current.map(\.id))) { throw DisplayMindError(reason) }
             _ = try Configuration.arguments(for: preset.displays)
@@ -160,9 +186,28 @@ import ServiceManagement
                 busy = false
                 return
             }
-            var journal = try recovery.arm(previous: current.map(\.setting))
+            let needsAirPlay = preset.airPlay.map { target in !current.contains(where: { $0.id == target.displayID }) } ?? false
+            if needsAirPlay { try AirPlayController.requireAccess() }
+            var journal = try recovery.arm(previous: current.map(\.setting), setupTimeout: needsAirPlay ? 180 : 65)
             recoveryID = journal.id
-            try await Task.detached { try backend.apply(preset.displays) }.value
+            if needsAirPlay, let target = preset.airPlay {
+                status = "Connecting AirPlay to \(target.receiverName)…"
+                let recovery = self.recovery, changeID = journal.id
+                try await Task.detached {
+                    try AirPlayConnection.ensure(target, online: Hardware.connectedDisplayIDs, start: {
+                        try AirPlayController().setConnected(target, true, beforeConnect: {
+                            try recovery.markAirPlayStarted(id: changeID, target: target)
+                        })
+                    })
+                }.value
+            }
+            status = "Applying \(preset.name)…"
+            var connected = current
+            if needsAirPlay { connected = try await Task.detached { try backend.read() }.value }
+            if let reason = Configuration.availability(preset, connected: Set(connected.map(\.id)), allowAirPlayConnection: false) { throw DisplayMindError(reason) }
+            if !Configuration.matches(preset.displays, actual: connected.map(\.setting)) {
+                try await Task.detached { try backend.apply(preset.displays) }.value
+            }
             let actual = try await Task.detached { try backend.read() }.value
             displays = Hardware.nameDisplays(actual)
             guard Configuration.matches(preset.displays, actual: actual.map(\.setting)) else {
@@ -172,6 +217,7 @@ import ServiceManagement
                 try recovery.keep(id: journal.id)
                 recoveryID = nil
                 status = "Automatically applied \(preset.name)"
+                gate.consume(Hardware.devices(), now: Date())
                 busy = false
             } else {
                 journal.deadline = Date().addingTimeInterval(20)
@@ -196,6 +242,7 @@ import ServiceManagement
             try recovery.keep(id: pending.journal.id)
             confirm(pending.preset.id)
             status = "\(pending.preset.name) is active"
+            gate.consume(Hardware.devices(), now: Date())
             self.pending = nil; recoveryID = nil
         } catch { report(error) }
     }
@@ -208,6 +255,7 @@ import ServiceManagement
         do { try recovery.requestRevert() } catch { busy = false; report(error) }
     }
     private func tick() async {
+        airPlayAuthorized = AirPlayController.authorized
         if let pending { secondsRemaining = max(0, Int(ceil(pending.journal.deadline.timeIntervalSinceNow))) }
         if let id = recoveryID, let result = recovery.result(), result.id == id {
             recoveryID = nil; pending = nil; busy = false
@@ -216,8 +264,9 @@ import ServiceManagement
             else if let failure = applyFailure { error = failure + " The previous layout was restored." }
             applyFailure = nil
             await refresh()
+            gate.consume(Hardware.devices(), now: Date())
         }
-        guard !polling, !busy, pending == nil else { return }
+        guard !polling, !busy, !airPlayScanning, pending == nil else { return }
         polling = true
         defer { polling = false }
         let found = await Task.detached { Hardware.devices() }.value
