@@ -101,8 +101,8 @@ struct MenuContent: View {
         }
         Divider()
         if store.pending != nil {
-            Button("Keep changes (\(store.secondsRemaining)s)", action: store.keep)
-            Button("Revert", action: store.revert)
+            Button("Revert (\(store.secondsRemaining)s left)", action: store.revert)
+            Button("Keep now", action: store.keep)
             Divider()
         }
         ForEach(store.settings.presets) { preset in

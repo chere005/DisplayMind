@@ -60,9 +60,47 @@ final class RecoveryTests: XCTestCase {
         try writeJournal(journal)
         let recovery = RecoveryController(directory: dir)
         try recovery.keep(id: journal.id)
-        XCTAssertThrowsError(try recovery.updateDeadline(id: journal.id, deadline: Date().addingTimeInterval(10)))
+        XCTAssertThrowsError(try recovery.openRevertWindow(id: journal.id, until: Date().addingTimeInterval(10)))
         recovery.watch(backend: backend)
         XCTAssertFalse(FileManager.default.fileExists(atPath: dir.appendingPathComponent("applied.txt").path))
+    }
+    func testAVerifiedChangeStaysWhenItsRevertWindowClosesEvenWithoutTheApp() throws {
+        var changed = layout(); changed[1].rotation = 270
+        let backend = try fakeBackend(current: changed, restored: layout())
+        let journal = RecoveryJournal(deadline: Date().addingTimeInterval(30), previous: layout())
+        try writeJournal(journal)
+        let recovery = RecoveryController(directory: dir)
+        try recovery.openRevertWindow(id: journal.id, until: Date().addingTimeInterval(0.3))
+        XCTAssertEqual(recovery.read()?.keepWhenDue, true)
+        recovery.watch(backend: backend)   // returns once the window has closed
+        XCTAssertNil(recovery.read(), "the journal is done")
+        XCTAssertNil(recovery.result(), "nothing was restored")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: dir.appendingPathComponent("applied.txt").path))
+        XCTAssertNoThrow(try recovery.keep(id: journal.id), "the app closing the same window afterwards is not an error")
+    }
+    func testRevertInsideTheWindowStillRestoresThePreviousLayout() throws {
+        var changed = layout(); changed[1].rotation = 270
+        let backend = try fakeBackend(current: changed, restored: layout())
+        let journal = RecoveryJournal(deadline: Date().addingTimeInterval(30), previous: layout())
+        try writeJournal(journal)
+        let recovery = RecoveryController(directory: dir)
+        try recovery.openRevertWindow(id: journal.id, until: Date().addingTimeInterval(30))
+        try recovery.requestRevert()
+        XCTAssertNil(recovery.read()?.keepWhenDue)
+        recovery.watch(backend: backend)
+        XCTAssertEqual(recovery.result()?.id, journal.id); XCTAssertNil(recovery.result()?.error)
+        XCTAssertTrue(try String(contentsOf: dir.appendingPathComponent("applied.txt")).contains("degree:90"))
+        XCTAssertThrowsError(try recovery.keep(id: journal.id), "a change that was restored cannot then be kept")
+    }
+    func testAnApplyThatNeverFinishedIsStillRolledBack() throws {
+        // No revert window was ever opened: the deadline is the safety net for an apply that hung or an app that died mid-change.
+        var changed = layout(); changed[1].rotation = 270
+        let backend = try fakeBackend(current: changed, restored: layout())
+        let journal = RecoveryJournal(deadline: .distantPast, previous: layout())
+        try writeJournal(journal)
+        let recovery = RecoveryController(directory: dir); recovery.watch(backend: backend)
+        XCTAssertEqual(recovery.result()?.id, journal.id)
+        XCTAssertTrue(try String(contentsOf: dir.appendingPathComponent("applied.txt")).contains("degree:90"))
     }
     func testExpiredChangeCannotBeKept() throws {
         let journal = RecoveryJournal(deadline: .distantPast, previous: layout())

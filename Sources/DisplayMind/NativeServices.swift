@@ -292,12 +292,14 @@ struct RecoveryController {
     private func write(_ journal: RecoveryJournal) throws {
         try JSONEncoder().encode(journal).write(to: pendingURL, options: .atomic)
     }
-    func updateDeadline(id: UUID, deadline: Date) throws {
+    /// The layout verified: from here the change stays unless it is reverted before `deadline`.
+    func openRevertWindow(id: UUID, until deadline: Date) throws {
         try withLock {
             guard var journal = read(), journal.id == id, journal.deadline > Date() else {
                 throw DisplayMindError("The display change has already started reverting.")
             }
             journal.deadline = deadline
+            journal.keepWhenDue = true
             try write(journal)
         }
     }
@@ -376,7 +378,14 @@ struct RecoveryController {
     }
     func keep(id: UUID) throws {
         try withLock {
-            guard let journal = read(), journal.id == id, journal.deadline > Date() else { throw DisplayMindError("The confirmation period ended. Restoring the previous layout.") }
+            guard let journal = read() else {
+                // Gone already: kept by the watchdog when the revert window closed, unless a restore claimed it.
+                if result()?.id == id { throw DisplayMindError("The previous layout was restored before the change could be kept.") }
+                return
+            }
+            guard journal.id == id, journal.keepWhenDue == true || journal.deadline > Date() else {
+                throw DisplayMindError("The change did not finish in time. Restoring the previous layout.")
+            }
             try FileManager.default.removeItem(at: pendingURL)
         }
     }
@@ -384,6 +393,7 @@ struct RecoveryController {
         try withLock {
             guard var journal = read() else { return }
             journal.deadline = .distantPast
+            journal.keepWhenDue = nil
             try write(journal)
         }
     }
@@ -406,6 +416,15 @@ struct RecoveryController {
                connectAirPlay: (AirPlayDestination) throws -> Void = RecoveryController.connectAirPlay, audio: AudioActions = .live) {
         while let journal = read() {
             if journal.deadline > Date() { Thread.sleep(forTimeInterval: 0.25); continue }
+            if journal.keepWhenDue == true {
+                // A verified change nobody reverted in its window stays, even if the app is gone: the journal is simply done.
+                try? withLock {
+                    guard let current = read(), current.id == journal.id, current.keepWhenDue == true, current.deadline <= Date() else { return }
+                    try FileManager.default.removeItem(at: pendingURL)
+                }
+                if read() == nil { return }
+                continue   // reverted at the last moment
+            }
             let claimed = directory.appendingPathComponent("restoring-\(journal.id).json")
             var finished = false
             do {

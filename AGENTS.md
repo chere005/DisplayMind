@@ -6,7 +6,7 @@ The baseline for all of Sean's repos lives in ~/GIT/AgentSuite/AGENTS.md and is 
 - Native SwiftUI macOS app; keep runtime local and state in `~/Library/Application Support/DisplayMind` (`DataFolder.resolve` moves a 0.4-era `~/DisplayMind` once).
 - Run `tools/preflight.sh` after implementation; it serializes builds with `tools/heavy-lock.sh`.
 - Never change the live display configuration during automated tests; use fixture backends and offscreen rendering.
-- Preserve the independent rollback watchdog and keep automatic rules limited to confirmed presets.
+- A verified manual apply stays unless it is reverted within 10 seconds; never switch back by a timer (Sean, 2026-11-10). The independent watchdog rolls back only an apply that never finished, or on Revert; keep it, and keep automatic rules limited to confirmed presets.
 - Vendor changes must retain licensing and record the upstream revision and local changes in `Vendor/displayplacer/ORIGIN.md`.
 - Release with `tools/tdtp.sh` (full preflight) or `tools/dtp.sh` (build, `--diagnostics`, watchdog check): bump minor, tag `vX.Y.0`, atomic push, install; `--dry-run` prints the mutating commands.
 - `tools/build.sh` signs with the only Developer ID Application identity (hardened runtime) when `DISPLAYMIND_SIGNING_IDENTITY` is unset, so the Accessibility grant survives rebuilds; `-` forces ad hoc.

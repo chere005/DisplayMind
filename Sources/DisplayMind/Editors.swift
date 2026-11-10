@@ -38,7 +38,7 @@ struct PresetEditor: View {
             }
             Divider()
             HStack(spacing: 10) {
-                Text("Applying a changed layout gives you 20 seconds to keep it.").font(.caption).foregroundStyle(.secondary)
+                Text("After a preset is applied you have 10 seconds to revert it.").font(.caption).foregroundStyle(.secondary)
                 Spacer(minLength: 12)
                 Button("Cancel") { store.editorPreset = nil }.keyboardShortcut(.cancelAction)
                 Button("Save preset") { save() }.buttonStyle(.borderedProminent).tint(Branding.fill).keyboardShortcut(.defaultAction)

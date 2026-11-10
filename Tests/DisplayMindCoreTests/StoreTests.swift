@@ -498,8 +498,8 @@ final class StoreTests: XCTestCase {
         await eventually { !store.isTicking }
         await store.apply(preset)
         XCTAssertNotNil(store.pending); XCTAssertTrue(store.isTicking)
-        await eventually { store.secondsRemaining < 20 }
-        XCTAssertLessThan(store.secondsRemaining, 20)   // countdown advanced with no manual tick
+        await eventually { store.secondsRemaining < 10 }
+        XCTAssertLessThan(store.secondsRemaining, 10)   // countdown advanced with no manual tick
         store.revert()
         await eventually { !store.busy && !store.isTicking }
         XCTAssertFalse(store.busy); XCTAssertFalse(store.isTicking)
@@ -550,5 +550,35 @@ final class StoreTests: XCTestCase {
         XCTAssertTrue(store.settings.presets[0].confirmed)
         XCTAssertEqual(store.settings.rules[0].requiredDevices.map(\.name), ["Living Room TV"])
         XCTAssertEqual(try SettingsFile(directory: data).load().presets[0].displays[1].name, "Living Room TV")
+    }
+    @MainActor func testAnAppliedPresetStaysWhenTheRevertWindowClosesWithNothingPressed() async throws {
+        let backend = try backend(current: previous, steps: [1: target])
+        let preset = Preset(name: "Wide", displays: target)
+        try save(presets: [preset])
+        let store = makeStore(backend)
+        store.revertWindow = 0.4
+        await store.apply(preset)
+        XCTAssertNotNil(store.pending); XCTAssertTrue(journalExists())
+        XCTAssertTrue(store.status.hasPrefix("Applied Wide. Revert within"))
+        XCTAssertEqual(RecoveryController(directory: data).read()?.keepWhenDue, true)
+        await tickUntil(store) { store.pending == nil }
+        XCTAssertNil(store.pending); XCTAssertFalse(store.busy); XCTAssertFalse(journalExists())
+        XCTAssertTrue(try layoutMatches(backend, target), "no switch back")
+        XCTAssertEqual(applyCalls(), 1)
+        XCTAssertTrue(store.settings.presets[0].confirmed, "a change that stayed counts as kept")
+        XCTAssertEqual(store.status, "Wide is active")
+        XCTAssertNil(store.error); XCTAssertNil(store.menuError)
+        XCTAssertNil(RecoveryController(directory: data).result())
+    }
+    @MainActor func testAChangeLeftInItsRevertWindowWhenTheAppQuitStaysAtTheNextLaunch() async throws {
+        let backend = try backend(current: target)
+        try save(presets: [Preset(name: "Wide", displays: target)])
+        var journal = RecoveryJournal(deadline: Date().addingTimeInterval(5), previous: previous)
+        journal.keepWhenDue = true
+        try JSONEncoder().encode(journal).write(to: data.appendingPathComponent("pending-change.json"))
+        let store = makeStore(backend)
+        XCTAssertFalse(store.busy); XCTAssertFalse(journalExists())
+        await store.refresh()
+        XCTAssertTrue(try layoutMatches(backend, target)); XCTAssertEqual(applyCalls(), 0)
     }
 }

@@ -63,8 +63,8 @@ import DisplayMindCore
         if has("--rules") { store.showRules = true }
         if has("--busy") { store.busy = true; store.status = "Applying \(store.selectedPreset?.name ?? "preset")…" }
         if has("--pending"), let preset = store.selectedPreset {
-            store.pending = Store.PendingChange(journal: RecoveryJournal(deadline: Date().addingTimeInterval(17), previous: preset.displays), preset: preset)
-            store.secondsRemaining = 17; store.status = "Keep this display layout?"
+            store.pending = Store.PendingChange(journal: RecoveryJournal(deadline: Date().addingTimeInterval(7), previous: preset.displays), preset: preset)
+            store.secondsRemaining = 7; store.status = "Applied \(preset.name). Revert within 10 seconds if it is wrong."
         }
         var size = NSSize(width: 1080, height: 760)
         if let text = value("--size")?.split(separator: "x").compactMap({ Double($0) }), text.count == 2 { size = NSSize(width: text[0], height: text[1]) }

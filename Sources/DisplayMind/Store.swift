@@ -11,7 +11,7 @@ import ServiceManagement
     @Published var error: String?
     @Published var status = "Reading connected displays…"
     @Published var pending: PendingChange? { didSet { syncTimers() } }
-    @Published var secondsRemaining = 20
+    @Published var secondsRemaining = 10
     @Published var loginEnabled = SMAppService.mainApp.status == .enabled
     @Published var selectedPresetID: UUID?
     @Published var showRules = false
@@ -36,6 +36,10 @@ import ServiceManagement
     /// How long a device set must stay unchanged before rules run.
     var settle: TimeInterval = 3
     var openWindow: (() -> Void)?
+    /// How long Revert is offered after a preset is applied by hand. When it ends the change stays (Sean, 2026-11-10: no automatic switch back).
+    var revertWindow: TimeInterval = 10
+    /// The journal outlives the window by this much, so the app closes it first and the watchdog only finishes the job if the app is gone.
+    static let revertGrace: TimeInterval = 3
     /// Safety net in case a change notification is missed.
     static let fallbackInterval: TimeInterval = 60
     /// Quiet time after the last change event before devices are first read, so dock bursts become one evaluation.
@@ -86,6 +90,8 @@ import ServiceManagement
         let connect: (AirPlayDestination) throws -> Void = { target in
             try AirPlayConnection.ensure(target, online: hardware.connectedDisplayIDs, start: { try airPlay.setConnected(target, true, {}) })
         }
+        // A verified change whose revert window was open when the app went away stays; only an apply that never finished is rolled back.
+        if let journal = recovery.read(), journal.keepWhenDue == true { try? recovery.keep(id: journal.id) }
         if let journal = recovery.read() {
             recoveryID = journal.id
             busy = true
@@ -426,11 +432,11 @@ import ServiceManagement
                 gate.consume(hardware.devices(), now: Date())
                 busy = false
             } else {
-                journal.deadline = Date().addingTimeInterval(20)
-                try recovery.updateDeadline(id: journal.id, deadline: journal.deadline)
+                journal.deadline = Date().addingTimeInterval(revertWindow)
+                try recovery.openRevertWindow(id: journal.id, until: journal.deadline.addingTimeInterval(Self.revertGrace))
                 pending = PendingChange(journal: journal, preset: preset)
-                secondsRemaining = 20
-                status = "Keep this display layout?" + (note.map { " " + $0 } ?? "")
+                secondsRemaining = Int(revertWindow.rounded(.up))
+                status = "Applied \(preset.name). Revert within \(secondsRemaining) seconds if it is wrong." + (note.map { " " + $0 } ?? "")
                 busy = false
                 openWindow?()
             }
@@ -463,7 +469,10 @@ import ServiceManagement
     func tick() async {
         let seen = changeCount
         defer { syncTimers() }
-        if let pending { secondsRemaining = max(0, Int(ceil(pending.journal.deadline.timeIntervalSinceNow))) }
+        if let pending {
+            secondsRemaining = max(0, Int(ceil(pending.journal.deadline.timeIntervalSinceNow)))
+            if pending.journal.deadline <= Date() { keep() }   // not reverted in its window: the change stays
+        }
         if let id = recoveryID, let result = recovery.result(), result.id == id {
             recoveryID = nil; pending = nil; busy = false
             status = result.error == nil ? "Previous layout restored" : Self.attention

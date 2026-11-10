@@ -281,20 +281,21 @@ struct MainView: View {
         }.padding(.leading, 28).padding(.trailing, 20).frame(minHeight: 44)
     }
 
+    /// Shown for the revert window after a preset is applied by hand. Doing nothing keeps the change.
     private var confirmation: some View {
         HStack(spacing: 14) {
-            Image(systemName: "timer").font(.title2).foregroundStyle(.orange)
+            Image(systemName: "checkmark.circle.fill").font(.title2).foregroundStyle(Branding.text)
             VStack(alignment: .leading, spacing: 3) {
-                Text("Keep this layout?").fontWeight(.semibold)
-                Text("Your previous layout returns in \(store.secondsRemaining) second\(store.secondsRemaining == 1 ? "" : "s").")
+                Text("Layout applied").fontWeight(.semibold)
+                Text("It stays. You can revert for \(store.secondsRemaining) more second\(store.secondsRemaining == 1 ? "" : "s").")
                     .font(.callout).foregroundStyle(.secondary).monospacedDigit()
             }
             Spacer(minLength: 12)
-            Button("Revert", action: store.revert).keyboardShortcut(.cancelAction)
-            Button("Keep changes", action: store.keep).buttonStyle(.borderedProminent).tint(Branding.fill).keyboardShortcut(.defaultAction)
+            Button("Revert", action: store.revert).keyboardShortcut(.cancelAction).help("Go back to the previous layout (Esc)")
+            Button("Keep", action: store.keep).buttonStyle(.borderedProminent).tint(Branding.fill).keyboardShortcut(.defaultAction).help("Keep it and close this now")
         }.controlSize(.large).padding(16)
-            .background(Color.orange.opacity(0.13), in: RoundedRectangle(cornerRadius: 12))
-            .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Color.orange.opacity(0.35)))
+            .background(Branding.selection, in: RoundedRectangle(cornerRadius: 12))
+            .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Branding.text.opacity(0.35)))
     }
 
     // MARK: Preset page

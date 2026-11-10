@@ -11,12 +11,12 @@ A small native macOS app for display presets and connection-based defaults.
 - Connect a saved AirPlay receiver before applying a preset, including from connection rules.
 - Apply a default when selected displays or USB docks/devices are connected or absent.
 - Arrange rule priority; require an exact display set or allow extra displays.
-- Preview changes with a 20-second Keep/Revert countdown and a separate rollback process.
+- An applied preset stays; for 10 seconds a countdown offers Revert. A separate process rolls back an apply that never finishes.
 - Optionally launch at login. Closing the window leaves the menu-bar app running.
 
 ## Use
 
-Open DisplayMind and choose **Capture current layout** in the sidebar. Give the preset a name, adjust it, and save it. **Apply preset** offers a timed confirmation; **Edit preset…** reopens the editor, where a click on a display selects it and a drag moves it. The sidebar and the menu-bar menu mark the preset whose layout the displays have now. Double-click a preset in the sidebar, or choose **Rename** from its ⋯ menu, to rename it in place; renaming never affects its rules. Capturing an unchanged current layout also marks it ready for automatic rules.
+Open DisplayMind and choose **Capture current layout** in the sidebar. Give the preset a name, adjust it, and save it. **Apply preset** applies it and offers **Revert** for 10 seconds; do nothing and it stays; **Edit preset…** reopens the editor, where a click on a display selects it and a drag moves it. The sidebar and the menu-bar menu mark the preset whose layout the displays have now. Double-click a preset in the sidebar, or choose **Rename** from its ⋯ menu, to rename it in place; renaming never affects its rules. Capturing an unchanged current layout also marks it ready for automatic rules.
 
 In **Connection rules**, choose a preset and mark each relevant display or USB device **Connected** or **Absent**. All conditions must match. The first eligible rule wins after connections settle for three seconds. DisplayMind does not poll: display, USB and wake notifications trigger a check (bursts are coalesced), a timer runs only during a Keep/Revert countdown, recovery wait or settle window, and a 60-second fallback re-check covers a missed notification. Rules also run on launch and wake. A manually selected preset remains active until the next connection change, wake, or rule change. Automatic switching can be paused in the sidebar or menu bar.
 
@@ -32,7 +32,7 @@ A preset that contains an AirPlay display connects its receiver when it is appli
 
 **Allow AirPlay control** opens the macOS Accessibility permission settings. Enable DisplayMind there so it can use the Screen Mirroring controls. The permission is needed only to start or stop a stream. Receiver pairing codes and macOS approval prompts remain under your control.
 
-Applying a preset stops any AirPlay stream it has no display for, connects its own receiver and waits up to 30 seconds for that display, then applies the arrangement and presents Keep/Revert. Reverting puts the streams back as they were: one the change started is stopped, one it stopped is reconnected, including if the app exits.
+Applying a preset stops any AirPlay stream it has no display for, connects its own receiver and waits up to 30 seconds for that display, then applies the arrangement and offers Revert. Reverting puts the streams back as they were: one the change started is stopped, one it stopped is reconnected, including if the app exits.
 
 Connection rules can trigger while the preset’s AirPlay display is offline. Use a dock or another display as the connection condition; an explicit condition requiring the AirPlay display to be connected still means it must already be connected. An AirPlay connection made by DisplayMind does not immediately trigger another rule.
 
@@ -62,7 +62,7 @@ Release: `tools/tdtp.sh` (full preflight) or `tools/dtp.sh` (build, `--diagnosti
 
 Settings and rollback journals live in `~/Library/Application Support/DisplayMind`; a `~/DisplayMind` folder from 0.4 and earlier is moved there on first launch. The app has no analytics or account. Display UUIDs, USB identities, AirPlay receiver selections, and sound device names and UIDs stay in local settings. macOS handles the network connection and screen streaming when AirPlay is selected. **Open data folder** reveals local settings. Invalid or newer settings files are preserved and reported instead of silently reset. Existing presets without an AirPlay or sound setting retain their behavior.
 
-During a pending change, `pending-change.json` holds the previous configuration. A separate watchdog restores it when the deadline expires, even if the UI exits. A failed rollback retains a `restoring-*.json` snapshot and records the failure. Reopening the app resumes recovery for an interrupted pending change. It also finishes a restore the watchdog claimed but never completed (a `restoring-*.json` with no result, under an hour old), and reports a failed recovery that happened while the app was closed, once.
+While a preset is being applied, and for the revert window after it, `pending-change.json` holds the previous configuration. A separate watchdog restores it if you revert, or if the apply never finishes because the app hangs or exits mid-change. Once the new layout has verified it stays, even if the app exits before the window closes. A failed rollback retains a `restoring-*.json` snapshot and records the failure. Reopening the app resumes recovery for an interrupted pending change. It also finishes a restore the watchdog claimed but never completed (a `restoring-*.json` with no result, under an hour old), and reports a failed recovery that happened while the app was closed, once.
 
 Automatic switches post a notification ("Automatically applied …"). With the window closed, errors post a notification and stay in the menu-bar menu as a line with **Dismiss error**; with the window open they appear as an alert. Allow notifications for DisplayMind in System Settings if macOS prompts.
 

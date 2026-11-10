@@ -24,6 +24,9 @@ public struct RecoveryJournal: Codable {
     public var id: UUID
     public var deadline: Date
     public var previous: [DisplaySetting]
+    /// Set once the new layout has verified: the change stays when the deadline passes, and the deadline is only how long a revert is offered.
+    /// Without it the deadline is a safety net: an apply that never finished is rolled back.
+    public var keepWhenDue: Bool?
     public var startedAirPlay: AirPlayDestination?
     /// AirPlay streams this change stopped because the new preset has no place for their display; a revert reconnects them.
     public var stoppedAirPlay: [AirPlayDestination]?
