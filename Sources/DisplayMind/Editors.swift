@@ -1,6 +1,7 @@
 import SwiftUI
 import DisplayMindCore
 
+/// The arrangement on the left, everything about the chosen display and the preset on the right: nothing sits below a fold.
 struct PresetEditor: View {
     @ObservedObject var store: Store
     let original: Preset
@@ -9,142 +10,131 @@ struct PresetEditor: View {
     @State private var validation: String?
     @State private var outputs: [AudioDevice]
     @State private var inputs: [AudioDevice]
-    init(store: Store, original: Preset) {
+    /// `selected` and `validate` open the editor on a given display or with its arrangement message showing (previews).
+    init(store: Store, original: Preset, selected: String? = nil, validate: Bool = false) {
         self.store = store; self.original = original
         _outputs = State(initialValue: store.audio.outputs()); _inputs = State(initialValue: store.audio.inputs())
         _draft = State(initialValue: original)
-        _selectedID = State(initialValue: original.displays.first?.id ?? "")
+        _selectedID = State(initialValue: selected ?? original.displays.first?.id ?? "")
+        _validation = State(initialValue: validate ? Configuration.arrangementIssue(original.displays) : nil)
     }
+    private var isNew: Bool { !store.settings.presets.contains { $0.id == original.id } }
+    // A popup is as wide as its longest item unless told otherwise, so every control in the inspector gets one width.
+    private let labelWidth: CGFloat = 76
+    private let columnWidth: CGFloat = 316
+    private var fieldWidth: CGFloat { columnWidth - labelWidth - 10 }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            HStack {
-                Text("Edit display preset").font(.title2).fontWeight(.semibold)
-                Spacer()
-                Text("Changes apply when you choose Apply preset.").font(.caption).foregroundStyle(.secondary)
-            }
-            TextField("Preset name", text: $draft.name).textFieldStyle(.roundedBorder).font(.title3)
-            ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
-            airPlayControls
-            soundControls
-            DisplayDiagram(displays: draft.displays, moved: { id, x, y in
-                if let i = draft.displays.firstIndex(where: { $0.id == id }) {
-                    guard let snapped = Configuration.snappedPosition(draft.displays, moving: id, to: (x, y)) else { return }
-                    draft.displays[i].x = min(100_000, max(-100_000, snapped.x)); draft.displays[i].y = min(100_000, max(-100_000, snapped.y))
-                    validation = nil
-                }
-            }).frame(height: 210)
-            Text("Drag extended displays to arrange them, or use exact positions below. The main display stays at (0, 0).")
-                .font(.caption).foregroundStyle(.secondary)
-            Picker("Display", selection: $selectedID) { ForEach(draft.displays) { Text($0.name).tag($0.id) } }
-            if let index = draft.displays.firstIndex(where: { $0.id == selectedID }) {
-                displayControls(index)
-            }
-            if let validation { Text(validation).foregroundStyle(.red).font(.callout) }
-            }
-            }.frame(maxHeight: .infinity)
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 16) {
+                Text(isNew ? "New preset" : "Edit preset").font(.title2).fontWeight(.semibold).fixedSize()
+                TextField("Preset name", text: $draft.name).textFieldStyle(.roundedBorder).controlSize(.large)
+            }.padding(.horizontal, 24).padding(.top, 22).padding(.bottom, 18)
             Divider()
-            HStack {
-                Text("Applying a new layout gives you 20 seconds to keep it.").font(.caption).foregroundStyle(.secondary)
-                Spacer()
-                Button("Cancel") { store.editorPreset = nil }.keyboardShortcut(.cancelAction)
-                Button("Save preset") {
-                    do {
-                        try Configuration.validate(draft)
-                        if let issue = Configuration.arrangementIssue(draft.displays) { validation = issue; return }
-                        if draft.displays != original.displays || draft.airPlay != original.airPlay { draft.confirmed = false }
-                        store.save(draft)
-                    } catch { validation = error.localizedDescription }
-                }.buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction).disabled(draft.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            HStack(alignment: .top, spacing: 0) {
+                arrangement.padding(20).frame(maxWidth: .infinity, maxHeight: .infinity)
+                Divider()
+                ScrollView { inspector.frame(width: columnWidth, alignment: .leading).padding(20) }.frame(width: columnWidth + 40)
             }
-        }.padding(26).frame(width: 740, height: 720).background(Color(nsColor: .windowBackgroundColor))
+            Divider()
+            HStack(spacing: 10) {
+                Text("Applying a changed layout gives you 20 seconds to keep it.").font(.caption).foregroundStyle(.secondary)
+                Spacer(minLength: 12)
+                Button("Cancel") { store.editorPreset = nil }.keyboardShortcut(.cancelAction)
+                Button("Save preset") { save() }.buttonStyle(.borderedProminent).tint(Branding.fill).keyboardShortcut(.defaultAction)
+                    .disabled(draft.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }.controlSize(.large).padding(.horizontal, 24).padding(.vertical, 14)
+        }.frame(width: 980, height: 740).background(Color(nsColor: .windowBackgroundColor))
             .alert("DisplayMind", isPresented: Binding(get: { store.error != nil }, set: { if !$0 { store.dismissError() } })) {
                 Button("OK", role: .cancel) { store.dismissError() }
             } message: { Text(store.error ?? "") }
     }
-    private var airPlayDisplays: [DisplaySetting] {
-        draft.displays.filter { display in display.enabled && !store.displays.contains(where: { $0.id == display.id && $0.builtIn }) }
+
+    private func save() {
+        do {
+            try Configuration.validate(draft)
+            if let issue = Configuration.arrangementIssue(draft.displays) { validation = issue; return }
+            if draft.displays != original.displays || draft.airPlay != original.airPlay { draft.confirmed = false }
+            store.save(draft)
+        } catch { validation = error.localizedDescription }
     }
-    private var airPlayControls: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Toggle("Connect AirPlay when applying this preset", isOn: Binding(get: { draft.airPlay != nil }, set: { enabled in
-                if enabled, let display = airPlayDisplays.first {
-                    draft.airPlay = AirPlayDestination(receiverName: display.name, displayID: display.id)
-                } else { draft.airPlay = nil }
-            })).fontWeight(.medium).disabled(airPlayDisplays.isEmpty)
-            if airPlayDisplays.isEmpty {
-                Text("Connect the receiver using macOS Screen Mirroring, then capture that layout to include its display in a preset.")
-                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            }
-            if let target = draft.airPlay {
-                HStack {
-                    TextField("Receiver name in Screen Mirroring", text: Binding(get: { draft.airPlay?.receiverName ?? "" }, set: {
-                        draft.airPlay?.receiverName = $0; draft.airPlay?.controlIdentifier = nil
-                    })).textFieldStyle(.roundedBorder)
-                    if store.airPlayReceivers.isEmpty {
-                        Button("Find receivers…") { Task { await store.findAirPlayReceivers() } }
-                    } else {
-                        Menu("Choose receiver") {
-                            ForEach(store.airPlayReceivers) { receiver in
-                                Button(receiver.name + (receiver.selected == true ? " (connected)" : "")) {
-                                    draft.airPlay?.receiverName = receiver.name
-                                    draft.airPlay?.controlIdentifier = receiver.id
-                                }
+
+    // MARK: Arrangement
+
+    private var arrangement: some View {
+        let hidden = draft.displays.filter { !$0.enabled || $0.mirrorOf != nil }
+        return VStack(alignment: .leading, spacing: 12) {
+            DisplayDiagram(displays: draft.displays, selected: selectedID, select: { selectedID = $0 }, moved: { id, x, y in
+                guard let i = draft.displays.firstIndex(where: { $0.id == id }),
+                      let snapped = Configuration.snappedPosition(draft.displays, moving: id, to: (x, y)) else { return }
+                draft.displays[i].x = min(100_000, max(-100_000, snapped.x)); draft.displays[i].y = min(100_000, max(-100_000, snapped.y))
+                validation = nil
+            }).frame(maxWidth: .infinity, maxHeight: .infinity)
+            if !hidden.isEmpty {
+                // Mirrors and disabled displays take no room in the arrangement, so they are chosen here.
+                HStack(spacing: 8) {
+                    Text("Not in the arrangement").font(.caption).foregroundStyle(.secondary).fixedSize()
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 6) {
+                            ForEach(hidden) { display in
+                                Button { selectedID = display.id } label: {
+                                    Label(display.name + (display.enabled ? " · mirror" : " · disabled"), systemImage: display.enabled ? "rectangle.on.rectangle" : "display.trianglebadge.exclamationmark")
+                                        .font(.caption).lineLimit(1).padding(.horizontal, 9).padding(.vertical, 5)
+                                        .background(selectedID == display.id ? Branding.selection : Branding.card, in: Capsule())
+                                        .overlay(Capsule().strokeBorder(selectedID == display.id ? Branding.text : Branding.hairline))
+                                        .contentShape(Capsule())
+                                }.buttonStyle(.plain).help("Edit \(display.name)")
                             }
-                            Divider()
-                            Button("Refresh receivers…") { Task { await store.findAirPlayReceivers() } }
-                        }.fixedSize()
+                        }
                     }
-                    if store.airPlayScanning { ProgressView().controlSize(.small) }
-                }.disabled(store.airPlayScanning)
-                Picker("Saved AirPlay display", selection: Binding(get: { target.displayID }, set: { draft.airPlay?.displayID = $0 })) {
-                    ForEach(airPlayDisplays) { Text($0.name).tag($0.id) }
                 }
-                HStack(alignment: .top) {
-                    Text("Choose the receiver’s display captured in this preset. DisplayMind connects it before arranging your displays.")
-                        .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                    if !store.airPlayAuthorized { Button("Allow AirPlay control…", action: store.allowAirPlayControl).font(.caption) }
-                }
-                Text("Find receivers briefly opens Screen Mirroring. A first-time receiver may ask for a pairing code.")
-                    .font(.caption).foregroundStyle(.secondary)
             }
-        }.padding(14).background(Color.accentColor.opacity(0.045), in: RoundedRectangle(cornerRadius: 10))
-    }
-    private func soundPicker(_ title: String, connected: [AudioDevice], saved: AudioDevice?, set: @escaping (AudioDevice?) -> Void) -> some View {
-        let options = connected + (saved.map { s in connected.contains(where: { $0.uid == s.uid }) ? [] : [s] } ?? [])
-        return Picker(title, selection: Binding(get: { saved?.uid ?? "" }, set: { uid in set(options.first { $0.uid == uid }) })) {
-            Text("Don’t change").tag("")
-            ForEach(options, id: \.uid) { device in
-                Text(device.name + (connected.contains(where: { $0.uid == device.uid }) ? "" : " (not connected)")).tag(device.uid)
+            if let validation {
+                Label(validation, systemImage: "exclamationmark.triangle.fill").font(.callout).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true)
+            } else {
+                Text("Click a display to edit it. Drag an extended display to move it; it snaps to the nearest edge. The main display stays at (0, 0).")
+                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
         }
     }
-    private func setSound(_ change: (inout AudioSelection) -> Void) {
-        var selection = draft.audio ?? AudioSelection()
-        change(&selection)
-        draft.audio = selection.isEmpty ? nil : selection
+
+    // MARK: Inspector
+
+    private var inspector: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            VStack(alignment: .leading, spacing: 12) {
+                SectionLabel("Display")
+                PopUp(label: "Display", options: draft.displays.map { ($0.id, $0.name) }, selection: $selectedID).frame(width: columnWidth)
+                if let index = draft.displays.firstIndex(where: { $0.id == selectedID }) { displayControls(index) }
+            }
+            Divider()
+            soundControls
+            Divider()
+            airPlayControls
+        }
     }
-    private var soundControls: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Sound").fontWeight(.medium)
-            soundPicker("Output", connected: outputs, saved: draft.audio?.output) { device in setSound { $0.output = device } }
-            soundPicker("Input", connected: inputs, saved: draft.audio?.input) { device in setSound { $0.input = device } }
-            Text("Applying the preset sets these as the Mac’s sound devices after the displays are arranged. A device that is not connected is skipped.")
-                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-        }.padding(14).frame(maxWidth: .infinity, alignment: .leading).background(Color.accentColor.opacity(0.045), in: RoundedRectangle(cornerRadius: 10))
+
+    private func label(_ text: String) -> some View {
+        Text(text).foregroundStyle(.secondary).frame(width: labelWidth, alignment: .leading)
     }
+    private func note(_ text: String) -> some View {
+        Text(text).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+    }
+
     @ViewBuilder private func displayControls(_ index: Int) -> some View {
         let display = draft.displays[index]
         let isMain = display.mirrorOf == nil && display.x == 0 && display.y == 0
-        Grid(alignment: .leading, horizontalSpacing: 24, verticalSpacing: 14) {
+        Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 10, verticalSpacing: 12) {
             GridRow {
-                Text("Name").foregroundStyle(.secondary)
-                TextField("Display name", text: $draft.displays[index].name).textFieldStyle(.roundedBorder)
+                label("Name")
+                TextField("Display name", text: $draft.displays[index].name).textFieldStyle(.roundedBorder).frame(width: fieldWidth)
             }
             GridRow {
-                Text("Use as").foregroundStyle(.secondary)
-                HStack {
-                    Picker("Use as", selection: Binding(get: { draft.displays[index].mirrorOf ?? "" }, set: { parent in
+                label("Use as")
+                if isMain {
+                    Label("Main display", systemImage: "menubar.rectangle").foregroundStyle(Branding.text)
+                } else {
+                    PopUp(label: "Use as", options: [("", "Extended display")] + draft.displays.filter { $0.id != display.id && $0.enabled && $0.mirrorOf == nil }.map { ($0.id, "Mirror of \($0.name)") }, selection: Binding(get: { draft.displays[index].mirrorOf ?? "" }, set: { parent in
                         draft.displays[index].mirrorOf = parent.isEmpty ? nil : parent
                         if parent.isEmpty && draft.displays[index].x == 0 && draft.displays[index].y == 0,
                            let main = draft.displays.first(where: { $0.id != display.id && $0.mirrorOf == nil && $0.x == 0 && $0.y == 0 }) {
@@ -153,22 +143,14 @@ struct PresetEditor: View {
                         if !parent.isEmpty {
                             for i in draft.displays.indices where draft.displays[i].mirrorOf == display.id { draft.displays[i].mirrorOf = parent }
                         }
-                    })) {
-                        Text("Extended display").tag("")
-                        ForEach(draft.displays.filter { $0.id != display.id && $0.enabled && $0.mirrorOf == nil && $0.mirrorOf != display.id }) { source in
-                            Text("Mirror \(source.name)").tag(source.id)
-                        }
-                    }.labelsHidden().disabled(isMain)
-                    if isMain { Label("Main", systemImage: "menubar.rectangle").font(.caption).foregroundStyle(Color.accentColor) }
-                    else if display.mirrorOf == nil {
-                        Button("Make main") { Configuration.makeMain(display.id, displays: &draft.displays) }
-                    }
+                        validation = nil
+                    }), separatesFirst: true).frame(width: fieldWidth)
                 }
             }
             if display.mirrorOf == nil {
                 GridRow {
-                    Text("Rotation").foregroundStyle(.secondary)
-                    Picker("Rotation", selection: Binding(get: { draft.displays[index].rotation }, set: { rotation in
+                    label("Rotation")
+                    Segments(label: "Rotation", options: [(0, "0°"), (90, "90°"), (180, "180°"), (270, "270°")], selection: Binding(get: { draft.displays[index].rotation }, set: { rotation in
                         let old = draft.displays[index].rotation
                         if old % 180 != rotation % 180 {
                             let width = draft.displays[index].mode.width
@@ -176,25 +158,29 @@ struct PresetEditor: View {
                             draft.displays[index].mode.height = width
                         }
                         draft.displays[index].rotation = rotation
-                    })) {
-                        Text("0°").tag(0); Text("90°").tag(90); Text("180°").tag(180); Text("270°").tag(270)
-                    }.pickerStyle(.segmented).labelsHidden().frame(width: 300)
+                        validation = nil
+                    })).frame(width: fieldWidth)
                 }
                 GridRow {
-                    Text("Resolution").foregroundStyle(.secondary)
-                    Picker("Resolution", selection: $draft.displays[index].mode) {
-                        ForEach(availableModes(for: display)) { mode in Text(mode.label).tag(mode) }
-                    }.labelsHidden()
+                    label("Resolution")
+                    PopUp(label: "Resolution", options: availableModes(for: display).map { ($0, $0.label) }, selection: $draft.displays[index].mode).frame(width: fieldWidth)
                 }
                 GridRow {
-                    Text("Position").foregroundStyle(.secondary)
-                    HStack {
-                        Text("X").font(.caption)
-                        TextField("X", value: Binding(get: { draft.displays[index].x }, set: { draft.displays[index].x = min(100_000, max(-100_000, $0)) }), format: .number.grouping(.never)).frame(width: 80)
-                        Text("Y").font(.caption)
-                        TextField("Y", value: Binding(get: { draft.displays[index].y }, set: { draft.displays[index].y = min(100_000, max(-100_000, $0)) }), format: .number.grouping(.never)).frame(width: 80)
-                        if !isMain {
-                            Menu("Place beside…") {
+                    label("Position")
+                    HStack(spacing: 6) {
+                        Text("X").foregroundStyle(.secondary)
+                        TextField("X", value: Binding(get: { draft.displays[index].x }, set: { draft.displays[index].x = min(100_000, max(-100_000, $0)); validation = nil }), format: .number.grouping(.never))
+                            .frame(width: 72).multilineTextAlignment(.trailing)
+                        Text("Y").foregroundStyle(.secondary).padding(.leading, 6)
+                        TextField("Y", value: Binding(get: { draft.displays[index].y }, set: { draft.displays[index].y = min(100_000, max(-100_000, $0)); validation = nil }), format: .number.grouping(.never))
+                            .frame(width: 72).multilineTextAlignment(.trailing)
+                    }.textFieldStyle(.roundedBorder).disabled(isMain)
+                }
+                if !isMain {
+                    GridRow {
+                        Color.clear.frame(width: labelWidth, height: 1)
+                        HStack(spacing: 8) {
+                            Menu("Place beside") {
                                 ForEach(draft.displays.filter { $0.id != display.id && $0.mirrorOf == nil && $0.enabled }) { other in
                                     Menu(other.name) {
                                         Button("To the right") { place(index, x: other.x + other.mode.width, y: other.y) }
@@ -204,22 +190,23 @@ struct PresetEditor: View {
                                     }
                                 }
                             }.fixedSize()
+                            Button("Make main") { Configuration.makeMain(display.id, displays: &draft.displays); validation = nil }.fixedSize()
                         }
-                    }.textFieldStyle(.roundedBorder).disabled(isMain)
+                    }
                 }
             } else {
                 GridRow {
-                    Text("Mirroring").foregroundStyle(.secondary)
-                    Text("Resolution, rotation, and position follow the source display.").font(.callout)
+                    label("Mirroring")
+                    note("Resolution, rotation and position follow \(draft.displays.first { $0.id == display.mirrorOf }?.name ?? "the source display").")
                 }
             }
         }
-        if let connected = store.displays.first(where: { $0.id == display.id }), connected.setting.rotation != display.rotation {
-            Text("Modes are based on the display’s current orientation. If macOS rejects a rotated mode, the previous layout is restored.").font(.caption).foregroundStyle(.secondary)
+        if let connected = store.displays.first(where: { $0.id == display.id }), display.mirrorOf == nil, connected.setting.rotation != display.rotation {
+            note("Resolutions are listed for the display’s current orientation. If macOS rejects a rotated one, the previous layout is restored.")
         }
-        if !display.enabled { Text("This display was disabled in the captured layout.").font(.caption).foregroundStyle(.secondary) }
+        if !display.enabled { note("This display was disabled in the captured layout and stays disabled.") }
     }
-    private func place(_ index: Int, x: Int, y: Int) { draft.displays[index].x = x; draft.displays[index].y = y }
+    private func place(_ index: Int, x: Int, y: Int) { draft.displays[index].x = x; draft.displays[index].y = y; validation = nil }
     private func availableModes(for display: DisplaySetting) -> [DisplayMode] {
         guard let connected = store.displays.first(where: { $0.id == display.id }) else { return [display.mode] }
         let modes = connected.modes.map { mode -> DisplayMode in
@@ -229,6 +216,99 @@ struct PresetEditor: View {
         }
         return Array(Set(modes + [display.mode])).sorted(by: DisplayMode.pickerOrder)
     }
+
+    // MARK: Sound
+
+    private func soundPicker(_ title: String, connected: [AudioDevice], saved: AudioDevice?, set: @escaping (AudioDevice?) -> Void) -> some View {
+        let options = connected + (saved.map { s in connected.contains(where: { $0.uid == s.uid }) ? [] : [s] } ?? [])
+        let titles = options.map { device in (device.uid, device.name + (connected.contains(where: { $0.uid == device.uid }) ? "" : " (not connected)")) }
+        return PopUp(label: title, options: [("", "Don’t change")] + titles, selection: Binding(get: { saved?.uid ?? "" }, set: { uid in set(options.first { $0.uid == uid }) }), separatesFirst: true)
+            .frame(width: fieldWidth)
+    }
+    private func setSound(_ change: (inout AudioSelection) -> Void) {
+        var selection = draft.audio ?? AudioSelection()
+        change(&selection)
+        draft.audio = selection.isEmpty ? nil : selection
+    }
+    private var soundControls: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            SectionLabel("Sound")
+            Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 10, verticalSpacing: 12) {
+                GridRow {
+                    label("Output")
+                    soundPicker("Sound output", connected: outputs, saved: draft.audio?.output) { device in setSound { $0.output = device } }
+                }
+                GridRow {
+                    label("Input")
+                    soundPicker("Sound input", connected: inputs, saved: draft.audio?.input) { device in setSound { $0.input = device } }
+                }
+            }
+            note("Set after the displays are arranged. A device that is not connected is skipped.")
+        }
+    }
+
+    // MARK: AirPlay
+
+    private var airPlayDisplays: [DisplaySetting] {
+        draft.displays.filter { display in display.enabled && !store.displays.contains(where: { $0.id == display.id && $0.builtIn }) }
+    }
+    private var airPlayControls: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            SectionLabel("AirPlay")
+            Toggle("Connect a receiver when applying", isOn: Binding(get: { draft.airPlay != nil }, set: { enabled in
+                if enabled, let display = airPlayDisplays.first {
+                    draft.airPlay = AirPlayDestination(receiverName: display.name, displayID: display.id)
+                } else { draft.airPlay = nil }
+            })).disabled(airPlayDisplays.isEmpty)
+            if airPlayDisplays.isEmpty {
+                note("Connect the receiver with macOS Screen Mirroring, then capture that layout so its display is part of a preset.")
+            }
+            if let target = draft.airPlay {
+                Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 10, verticalSpacing: 12) {
+                    GridRow {
+                        label("Receiver")
+                        TextField("Name in Screen Mirroring", text: Binding(get: { draft.airPlay?.receiverName ?? "" }, set: {
+                            draft.airPlay?.receiverName = $0; draft.airPlay?.controlIdentifier = nil
+                        })).textFieldStyle(.roundedBorder).frame(width: fieldWidth)
+                    }
+                    GridRow {
+                        Color.clear.frame(width: labelWidth, height: 1)
+                        HStack(spacing: 8) {
+                            if store.airPlayReceivers.isEmpty {
+                                Button("Find receivers…") { Task { await store.findAirPlayReceivers() } }.fixedSize()
+                            } else {
+                                Menu("Choose receiver") {
+                                    ForEach(store.airPlayReceivers) { receiver in
+                                        Button(receiver.name + (receiver.selected == true ? " (connected)" : "")) {
+                                            draft.airPlay?.receiverName = receiver.name
+                                            draft.airPlay?.controlIdentifier = receiver.id
+                                        }
+                                    }
+                                    Divider()
+                                    Button("Look again…") { Task { await store.findAirPlayReceivers() } }
+                                }.fixedSize()
+                            }
+                            if store.airPlayScanning { ProgressView().controlSize(.small) }
+                        }.disabled(store.airPlayScanning)
+                    }
+                    GridRow {
+                        label("Its display")
+                        PopUp(label: "AirPlay display", options: airPlayDisplays.map { ($0.id, $0.name) }, selection: Binding(get: { target.displayID }, set: { draft.airPlay?.displayID = $0 })).frame(width: fieldWidth)
+                    }
+                }
+                note("DisplayMind connects the receiver, waits for this display, then arranges. Finding receivers briefly opens Screen Mirroring; a first-time receiver may ask for a pairing code.")
+                if !store.airPlayAuthorized {
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("DisplayMind needs Accessibility access to use Screen Mirroring.").font(.callout).fixedSize(horizontal: false, vertical: true)
+                            Button("Allow AirPlay control…", action: store.allowAirPlayControl)
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 struct RuleEditor: View {
@@ -236,49 +316,72 @@ struct RuleEditor: View {
     let original: ConnectionRule
     @State private var draft: ConnectionRule
     init(store: Store, original: ConnectionRule) { self.store = store; self.original = original; _draft = State(initialValue: original) }
+    private var isNew: Bool { !store.settings.rules.contains { $0.id == original.id } }
+    private var preset: Preset? { store.settings.presets.first { $0.id == draft.presetID } }
+    /// Displays first, then USB devices, each by name.
+    private var devices: [Device] {
+        store.knownDevices.sorted { ($0.kind == .display ? 0 : 1, $0.name.lowercased(), $0.id) < ($1.kind == .display ? 0 : 1, $1.name.lowercased(), $1.id) }
+    }
     var body: some View {
-        VStack(alignment: .leading, spacing: 20) {
-            Text("Connection rule").font(.title2).fontWeight(.semibold)
-            TextField("Rule name", text: $draft.name).textFieldStyle(.roundedBorder)
-            Picker("Apply preset", selection: $draft.presetID) { ForEach(store.settings.presets) { Text($0.name).tag($0.id) } }
-            if let preset = store.settings.presets.first(where: { $0.id == draft.presetID }), !preset.confirmed {
-                Label("Apply and keep this preset once before the rule can run.", systemImage: "info.circle").font(.callout).foregroundStyle(.orange)
-            }
-            if let preset = store.settings.presets.first(where: { $0.id == draft.presetID }), let target = preset.airPlay {
-                Text("This preset connects \(target.receiverName) automatically. Use a dock or another display as the trigger; requiring the AirPlay display to be connected would wait for a manual connection.")
-                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            }
-            Text("WHEN ALL THESE CONDITIONS MATCH").font(.system(size: 10, weight: .semibold)).foregroundStyle(.secondary)
-            ScrollView {
-                VStack(spacing: 14) {
-                    ForEach(store.knownDevices) { device in
-                        HStack {
-                            Image(systemName: device.kind == .display ? "display" : "cable.connector").frame(width: 22).foregroundStyle(.secondary)
-                            VStack(alignment: .leading, spacing: 3) {
-                                Text(device.name)
-                                Text(store.devices.contains(where: { $0.id == device.id }) ? "Connected now" : "Disconnected").font(.caption).foregroundStyle(.secondary)
-                                if store.knownDevices.filter({ $0.name == device.name }).count > 1 { Text(String(device.id.suffix(22))).font(.caption2.monospaced()).foregroundStyle(.secondary) }
-                            }
-                            Spacer()
-                            Picker(device.name, selection: Binding(get: { condition(device) }, set: { setCondition(device, $0) })) {
-                                Text("Ignore").tag(0); Text("Connected").tag(1); Text("Absent").tag(2)
-                            }.labelsHidden().frame(width: 150)
-                        }
-                    }
-                }.padding(.vertical, 4)
-            }.frame(minHeight: 120, maxHeight: 260)
-            Toggle("Require exactly this preset’s displays (no additional displays)", isOn: $draft.exactDisplays)
-            Text("Displays must already be connected unless this preset connects them through AirPlay. Rules wait for connections to settle, then apply once per connection change. Manual switching lasts until devices change again.")
-                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 16) {
+                Text(isNew ? "New rule" : "Edit rule").font(.title2).fontWeight(.semibold).fixedSize()
+                TextField("Rule name", text: $draft.name).textFieldStyle(.roundedBorder).controlSize(.large)
+            }.padding(.horizontal, 24).padding(.top, 22).padding(.bottom, 18)
             Divider()
-            HStack {
-                Toggle("Enabled", isOn: $draft.enabled)
-                Spacer()
+            VStack(alignment: .leading, spacing: 16) {
+                HStack(spacing: 10) {
+                    Text("Apply").foregroundStyle(.secondary)
+                    PopUp(label: "Preset to apply", options: store.settings.presets.map { ($0.id, $0.name) }, selection: $draft.presetID).frame(width: 260)
+                    Text("when all of these match").foregroundStyle(.secondary)
+                    Spacer(minLength: 0)
+                }
+                if let preset, !preset.confirmed {
+                    Label("Apply and keep this preset once before the rule can run.", systemImage: "info.circle").font(.callout).foregroundStyle(.orange)
+                }
+                if let target = preset?.airPlay {
+                    Text("This preset connects \(target.receiverName) itself. Use a dock or another display as the trigger: requiring the AirPlay display to be connected would wait for you to connect it by hand.")
+                        .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                }
+                Card {
+                    ScrollView {
+                        VStack(spacing: 0) {
+                            if devices.isEmpty { Text("No displays or USB devices detected yet.").foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading).padding(14) }
+                            ForEach(devices) { device in
+                                let connected = store.devices.contains { $0.id == device.id }
+                                HStack(spacing: 12) {
+                                    Image(systemName: device.kind == .display ? "display" : "cable.connector").foregroundStyle(.secondary).frame(width: 24)
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(device.name).lineLimit(1).truncationMode(.middle)
+                                        HStack(spacing: 6) {
+                                            Text(connected ? "Connected now" : "Not connected").foregroundStyle(connected ? Branding.text : Color.secondary)
+                                            if devices.filter({ $0.name == device.name }).count > 1 { Text(String(device.id.suffix(22))).monospaced().foregroundStyle(.secondary).lineLimit(1) }
+                                        }.font(.caption)
+                                    }
+                                    Spacer(minLength: 12)
+                                    Picker(device.name, selection: Binding(get: { condition(device) }, set: { setCondition(device, $0) })) {
+                                        Text("Ignore").tag(0); Text("Connected").tag(1); Text("Absent").tag(2)
+                                    }.pickerStyle(.segmented).labelsHidden().fixedSize()
+                                }.padding(.horizontal, 14).padding(.vertical, 9)
+                                if device.id != devices.last?.id { Divider().padding(.leading, 50) }
+                            }
+                        }
+                    }.frame(minHeight: 120, maxHeight: 300)
+                }
+                Toggle("Only when no other display is connected", isOn: $draft.exactDisplays)
+                Text("The preset’s own displays must already be connected, unless it connects one through AirPlay. A rule waits three seconds for connections to settle and runs once per change; switching by hand lasts until devices change again.")
+                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }.padding(.horizontal, 24).padding(.vertical, 18)
+            Divider()
+            HStack(spacing: 10) {
+                Toggle("Rule is on", isOn: $draft.enabled).toggleStyle(.switch).controlSize(.small).tint(Branding.fill)
+                Spacer(minLength: 12)
                 Button("Cancel") { store.editorRule = nil }.keyboardShortcut(.cancelAction)
-                Button("Save rule") { store.saveRule(draft) }.buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction)
+                Button("Save rule") { store.saveRule(draft) }.buttonStyle(.borderedProminent).tint(Branding.fill).keyboardShortcut(.defaultAction)
                     .disabled(draft.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || (draft.requiredDevices.isEmpty && draft.absentDevices.isEmpty))
-            }
-        }.padding(26).frame(width: 620).background(Color(nsColor: .windowBackgroundColor))
+                    .help(draft.requiredDevices.isEmpty && draft.absentDevices.isEmpty ? "Mark at least one device Connected or Absent" : "")
+            }.controlSize(.large).padding(.horizontal, 24).padding(.vertical, 14)
+        }.frame(width: 660).background(Color(nsColor: .windowBackgroundColor))
     }
     private func condition(_ device: Device) -> Int {
         draft.requiredDevices.contains { $0.id == device.id } ? 1 : draft.absentDevices.contains { $0.id == device.id } ? 2 : 0

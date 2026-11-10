@@ -46,6 +46,8 @@ import ServiceManagement
     /// A change (or launch/rule edit) has not yet been evaluated; the settle window is open.
     private var dirty = false { didSet { syncTimers() } }
     private var lastDevices: Set<String> = []
+    /// The displays were reconfigured since the layout was last read, so "active preset" may be out of date.
+    private var layoutStale = false
     private var polling = false
     private var writable = true
     private var applyFailure: String?
@@ -59,7 +61,7 @@ import ServiceManagement
     struct PendingChange { var journal: RecoveryJournal; var preset: Preset }
 
     /// `background: false` skips the monitor, timers and first refresh so tests can drive `refresh()` / `tick()` directly; a `monitor` passed explicitly (a fake) turns the event-driven scheduling on.
-    init(directory: URL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("DisplayMind"), demo: Bool = false,
+    init(directory: URL = DataFolder.resolve(), demo: Bool = false,
          backend: DisplayBackend = DisplayBackend(), hardware: HardwareProvider = .live, airPlay: AirPlayActions = .live, audio: AudioActions = .live, notifier: Notifier = .live,
          launchWatchdog: @escaping (URL) throws -> Void = RecoveryController.launchWatchdog,
          windowVisible: @escaping @MainActor () -> Bool = mainWindowVisible, background: Bool = true, monitor: HardwareMonitor? = nil) {
@@ -111,6 +113,7 @@ import ServiceManagement
 
     private func hardwareChanged(_ change: HardwareChange) {
         if change == .wake { gate.reset() }
+        if change != .usb { layoutStale = true }   // an arrangement change keeps the same device set
         changed()
     }
     /// Schedules one device evaluation after a quiet `coalesce` period; the settle window then runs on the 1 s ticker.
@@ -143,6 +146,14 @@ import ServiceManagement
         return Array(Dictionary((stored + devices).map { ($0.id, $0) }, uniquingKeysWith: { _, last in last }).values).sorted { $0.name < $1.name }
     }
     func unavailable(_ preset: Preset) -> String? { Configuration.availability(preset, connected: connectedIDs) }
+    /// The displays show exactly this preset's layout right now.
+    func isActive(_ preset: Preset) -> Bool {
+        Set(preset.displays.map(\.id)) == connectedIDs && Configuration.matches(preset.displays, actual: displays.map(\.setting))
+    }
+    private var idleStatus: String {
+        if let active = settings.presets.first(where: isActive) { return "\(active.name) is active" }
+        return "\(displays.count) display\(displays.count == 1 ? "" : "s") connected"
+    }
     func report(_ error: Error) { fail(error.localizedDescription) }
     /// With the window open the message is an alert; otherwise it is a menu line plus a notification, with no stale alert later.
     func fail(_ message: String) {
@@ -162,7 +173,7 @@ import ServiceManagement
         recoveryUnacknowledged = false
         recovery.acknowledge()
         error = nil; menuError = nil
-        if status == Self.attention { status = "\(displays.count) display\(displays.count == 1 ? "" : "s") connected" }
+        if status == Self.attention { status = idleStatus }
     }
     func allowAirPlayControl() {
         airPlay.requestAccess()
@@ -193,7 +204,7 @@ import ServiceManagement
         } catch { fail(error.localizedDescription); return nil }
     }
     private func persist(_ updated: AppSettings) -> Bool {
-        guard writable else { fail("The existing settings file could not be read. It has been preserved in ~/DisplayMind."); return false }
+        guard writable else { fail("The existing settings file could not be read. It has been preserved; use Open data folder to see it."); return false }
         do { try settingsFile.save(updated); settings = updated; return true }
         catch { report(error); return false }
     }
@@ -202,7 +213,7 @@ import ServiceManagement
             let backend = self.backend
             let current = try await Task.detached { try backend.read() }.value
             displays = hardware.nameDisplays(current)
-            if pending == nil && !busy && !recoveryUnacknowledged { status = "\(current.count) display\(current.count == 1 ? "" : "s") connected" }
+            if pending == nil && !busy && !recoveryUnacknowledged { status = idleStatus }
         } catch { report(error) }
     }
     func capture() async {
@@ -392,7 +403,7 @@ import ServiceManagement
             return copy
         }
         let ids = Set(devices.map(\.id))
-        if ids != lastDevices { lastDevices = ids; await refresh() }
+        if ids != lastDevices || layoutStale { lastDevices = ids; layoutStale = false; await refresh() }
         let due = gate.shouldEvaluate(devices, now: Date(), settle: settle)
         dirty = scheduling && (gate.isPending(devices) || changeCount != seen)
         guard due, writable,

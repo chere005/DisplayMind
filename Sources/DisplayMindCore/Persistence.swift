@@ -39,3 +39,24 @@ public struct RecoveryResult: Codable {
     public var acknowledged: Bool?
     public init(id: UUID, error: String?, acknowledged: Bool? = nil) { self.id = id; self.error = error; self.acknowledged = acknowledged }
 }
+
+public enum DataFolder {
+    /// `~/Library/Application Support/DisplayMind`, where an app's own state belongs.
+    /// Versions through 0.4 kept it in `~/DisplayMind`; that folder is moved here once. It is left alone, and used for this run, while a change
+    /// is still pending in it: the watchdog for that change was started with the old path and must find its journal there.
+    public static func resolve(home: URL = FileManager.default.homeDirectoryForCurrentUser,
+                               support: URL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0],
+                               fileManager: FileManager = .default) -> URL {
+        let current = support.appendingPathComponent("DisplayMind", isDirectory: true)
+        let legacy = home.appendingPathComponent("DisplayMind", isDirectory: true)
+        // Only a folder this app wrote is moved; anything else called ~/DisplayMind is not ours to touch.
+        guard !fileManager.fileExists(atPath: current.path),
+              fileManager.fileExists(atPath: legacy.appendingPathComponent("settings.json").path) else { return current }
+        if fileManager.fileExists(atPath: legacy.appendingPathComponent("pending-change.json").path) { return legacy }
+        do {
+            try fileManager.createDirectory(at: support, withIntermediateDirectories: true)
+            try fileManager.moveItem(at: legacy, to: current)
+            return current
+        } catch { return legacy }
+    }
+}

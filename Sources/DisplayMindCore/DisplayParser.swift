@@ -22,7 +22,9 @@ public enum DisplayParser {
                 throw DisplayMindError("Could not read the display configuration. No changes were made.")
             }
             let builtIn = block.contains("Type: MacBook built in screen")
-            let name = builtIn ? "Built-in display" : "External display \(displays.filter { !$0.builtIn }.count + 1)"
+            // macOS names only screens it draws to; a mirror keeps this name, so prefer the reported size to a bare ordinal.
+            let inches = first("(?m)^Type: (\\d+) inch external screen", block)
+            let name = builtIn ? "Built-in display" : inches.map { "\($0)-inch display" } ?? "External display \(displays.filter { !$0.builtIn }.count + 1)"
             let mode = DisplayMode(width: Int(res[0]) ?? 0, height: Int(res[1]) ?? 0,
                                    hertz: first("(?m)^Hertz: (\\d+)", block).flatMap(Int.init) ?? 0,
                                    depth: first("(?m)^Color Depth: (\\d+)", block).flatMap(Int.init) ?? 8,

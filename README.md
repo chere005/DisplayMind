@@ -16,7 +16,7 @@ A small native macOS app for display presets and connection-based defaults.
 
 ## Use
 
-Open DisplayMind and choose **Capture current**. Give the preset a name, adjust the layout, and save it. **Apply preset** offers a timed confirmation. Capturing an unchanged current layout also marks it ready for automatic rules.
+Open DisplayMind and choose **Capture current layout** in the sidebar. Give the preset a name, adjust it, and save it. **Apply preset** offers a timed confirmation; **Edit preset…** reopens the editor, where a click on a display selects it and a drag moves it. The sidebar and the menu-bar menu mark the preset whose layout the displays have now. Capturing an unchanged current layout also marks it ready for automatic rules.
 
 In **Connection rules**, choose a preset and mark each relevant display or USB device **Connected** or **Absent**. All conditions must match. The first eligible rule wins after connections settle for three seconds. DisplayMind does not poll: display, USB and wake notifications trigger a check (bursts are coalesced), a timer runs only during a Keep/Revert countdown, recovery wait or settle window, and a 60-second fallback re-check covers a missed notification. Rules also run on launch and wake. A manually selected preset remains active until the next connection change, wake, or rule change. Automatic switching can be paused in the sidebar or menu bar.
 
@@ -26,7 +26,7 @@ An edited preset must be applied and kept once before it can run automatically. 
 
 ## AirPlay
 
-Capture a layout while the receiver is connected through macOS Screen Mirroring. In the preset editor, enable **Connect AirPlay when applying this preset**, choose the **Saved AirPlay display**, and select the receiver with **Find receivers** or enter its exact Screen Mirroring name. Find receivers briefly opens Control Center; it does not start streaming.
+Capture a layout while the receiver is connected through macOS Screen Mirroring. In the preset editor, enable **Connect a receiver when applying**, choose **Its display**, and select the receiver with **Find receivers…** or enter its exact Screen Mirroring name. Find receivers briefly opens Control Center; it does not start streaming.
 
 [AirPlay preset editor](docs/airplay-editor.png)
 
@@ -60,7 +60,7 @@ Release: `tools/tdtp.sh` (full preflight) or `tools/dtp.sh` (build, `--diagnosti
 
 ## Storage and privacy
 
-Settings live in the visible `~/DisplayMind/settings.json` folder. The app has no analytics or account. Display UUIDs, USB identities, AirPlay receiver selections, and sound device names and UIDs stay in local settings. macOS handles the network connection and screen streaming when AirPlay is selected. **Open data folder** reveals local settings. Invalid or newer settings files are preserved and reported instead of silently reset. Existing presets without an AirPlay or sound setting retain their behavior.
+Settings and rollback journals live in `~/Library/Application Support/DisplayMind`; a `~/DisplayMind` folder from 0.4 and earlier is moved there on first launch. The app has no analytics or account. Display UUIDs, USB identities, AirPlay receiver selections, and sound device names and UIDs stay in local settings. macOS handles the network connection and screen streaming when AirPlay is selected. **Open data folder** reveals local settings. Invalid or newer settings files are preserved and reported instead of silently reset. Existing presets without an AirPlay or sound setting retain their behavior.
 
 During a pending change, `pending-change.json` holds the previous configuration. A separate watchdog restores it when the deadline expires, even if the UI exits. A failed rollback retains a `restoring-*.json` snapshot and records the failure. Reopening the app resumes recovery for an interrupted pending change. It also finishes a restore the watchdog claimed but never completed (a `restoring-*.json` with no result, under an hour old), and reports a failed recovery that happened while the app was closed, once.
 
@@ -82,6 +82,6 @@ Preflight builds the app, runs the full fixture-based suite, verifies the bundle
 dist/DisplayMind.app/Contents/MacOS/DisplayMind --render-preview /tmp/displaymind.png
 ```
 
-Add `--rules`, `--editor`, or `--rule-editor` for the other views, and `--airplay` to preview an AirPlay preset. No desktop window is shown during rendering. Automated tests use fake connection controls and never start or stop a real AirPlay stream.
+Add `--dark`, `--rules`, `--editor`, `--rule-editor`, `--airplay`, and state flags such as `--pending`, `--empty`, `--unavailable`, `--long` or `--many` (listed at the top of `Sources/DisplayMind/Preview.swift`); `--settings copy.json` renders a copy of real presets, and `--show` opens the same synthetic window on screen. The preview store uses a display helper that only fails, so nothing it does can reach the real displays, and automated tests use fake connection controls and never start or stop a real AirPlay stream.
 
 The silver DM mark uses MindSuite's charcoal tile, rounded 9-unit strokes, and 96-unit grid. Vector originals are in `assets/logo.svg` and `assets/logo-square.svg`; `tools/generate-icon.swift` generates the PNG, menu-bar PDF, and iconset used by the app.

@@ -6,7 +6,6 @@
 set -eu
 cd "$(dirname "$0")/.."
 BUNDLE_ID=com.seancheren.DisplayMind
-STATE_DIR="${DISPLAYMIND_STATE_DIR:-$HOME/DisplayMind}"
 REAL=0
 if [ $# -eq 0 ] || [ "$1" = /Applications ]; then REAL=1; fi
 DEST="${1:-/Applications}"
@@ -14,10 +13,19 @@ DEST="${1:-/Applications}"
 die() { echo "$*" >&2; exit 1; }
 
 test -d dist/DisplayMind.app || die 'Build the app with tools/preflight.sh first.'
-[ ! -e "$STATE_DIR/pending-change.json" ] || die "A display change is pending ($STATE_DIR/pending-change.json); keep or revert it first."
-# A snapshot touched in the last 3 minutes is a restore in flight; an older one is a kept record of a failed restore.
-RECENT=$(find "$STATE_DIR" -maxdepth 1 -name 'restoring-*.json' -mmin -3 2>/dev/null | head -1)
-[ -z "$RECENT" ] || die "A display recovery is in progress ($RECENT); let it finish first."
+# Refuse while a change or a restore is in flight in a state folder.
+check_state() {
+  [ ! -e "$1/pending-change.json" ] || die "A display change is pending ($1/pending-change.json); keep or revert it first."
+  # A snapshot touched in the last 3 minutes is a restore in flight; an older one is a kept record of a failed restore.
+  RECENT=$(find "$1" -maxdepth 1 -name 'restoring-*.json' -mmin -3 2>/dev/null | head -1)
+  [ -z "$RECENT" ] || die "A display recovery is in progress ($RECENT); let it finish first."
+}
+if [ -n "${DISPLAYMIND_STATE_DIR:-}" ]; then
+  check_state "$DISPLAYMIND_STATE_DIR"
+else
+  check_state "$HOME/Library/Application Support/DisplayMind"
+  check_state "$HOME/DisplayMind"   # 0.4 and earlier, until the app has moved it
+fi
 codesign --verify --deep --strict dist/DisplayMind.app
 mkdir -p "$DEST"
 TARGET="$DEST/DisplayMind.app"

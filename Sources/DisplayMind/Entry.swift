@@ -24,33 +24,7 @@ enum Entry {
             exit(0)
         }
         if let index = CommandLine.arguments.firstIndex(of: "--render-preview"), CommandLine.arguments.count > index + 1 {
-            let app = NSApplication.shared
-            app.setActivationPolicy(.prohibited)
-            let store = Store(directory: URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("DisplayMind-preview"), demo: true)
-            if CommandLine.arguments.contains("--rules") { store.showRules = true }
-            if CommandLine.arguments.contains("--airplay") {
-                store.settings.presets[0].airPlay = AirPlayDestination(receiverName: "Living Room TV", displayID: store.settings.presets[0].displays[1].id)
-            }
-            let content: AnyView
-            if CommandLine.arguments.contains("--editor") { content = AnyView(PresetEditor(store: store, original: store.settings.presets[0])) }
-            else if CommandLine.arguments.contains("--rule-editor") { content = AnyView(RuleEditor(store: store, original: store.settings.rules[0])) }
-            else { content = AnyView(MainView(store: store)) }
-            app.finishLaunching()
-            let view = NSHostingView(rootView: content.environment(\.colorScheme, .light).tint(Color(red: 0.12, green: 0.48, blue: 0.58)))
-            let window = NSWindow(contentRect: NSRect(x: -20000, y: -20000, width: 1080, height: 760), styleMask: [.borderless], backing: .buffered, defer: false)
-            window.contentView = view
-            view.frame = NSRect(x: 0, y: 0, width: 1080, height: 760)
-            view.layoutSubtreeIfNeeded()
-            RunLoop.main.run(until: Date().addingTimeInterval(0.4))
-            view.displayIfNeeded()
-            if let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
-                view.cacheDisplay(in: view.bounds, to: bitmap)
-                if let png = bitmap.representation(using: .png, properties: [:]) {
-                    do { try png.write(to: URL(fileURLWithPath: CommandLine.arguments[index + 1])); exit(0) }
-                    catch { fputs("\(error)\n", stderr); exit(1) }
-                }
-            }
-            exit(1)
+            Preview.run(CommandLine.arguments, output: CommandLine.arguments[index + 1])
         }
         DisplayMindApp.main()
     }
@@ -70,7 +44,7 @@ struct DisplayMindApp: App {
     @StateObject private var store = Store()
     var body: some Scene {
         Window("DisplayMind", id: "main") {
-            WindowContent(store: store).tint(Color(red: 0.12, green: 0.48, blue: 0.58))
+            WindowContent(store: store)
         }.defaultSize(width: 1080, height: 760).windowResizability(.contentMinSize)
         MenuBarExtra { MenuContent(store: store) } label: { Image(nsImage: Branding.menuIcon).accessibilityLabel("DisplayMind") }
     }
@@ -105,8 +79,9 @@ struct MenuContent: View {
             Divider()
         }
         ForEach(store.settings.presets) { preset in
-            Button(preset.name) { Task { await store.apply(preset) } }
-                .disabled(store.busy || store.pending != nil || store.unavailable(preset) != nil)
+            Button { Task { await store.apply(preset) } } label: {
+                if store.isActive(preset) { Label(preset.name, systemImage: "checkmark") } else { Text(preset.name) }
+            }.disabled(store.busy || store.pending != nil || store.unavailable(preset) != nil)
         }
         if store.settings.presets.isEmpty { Text("No presets yet") }
         Divider()

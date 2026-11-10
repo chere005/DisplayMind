@@ -263,13 +263,13 @@ extension Configuration {
         guard b.count > 1 else { return nil }
         let names = Dictionary(displays.map { ($0.id, $0.name) }, uniquingKeysWith: { a, _ in a })
         for i in b.indices { for j in b.indices where j > i && overlaps(b[i], b[j]) {
-            return "\(names[b[i].id] ?? "A display") and \(names[b[j].id] ?? "another display") overlap. macOS would move them, so the preset would not stay as saved. Drag them apart or use Place beside…."
+            return "\(names[b[i].id] ?? "A display") and \(names[b[j].id] ?? "another display") overlap. macOS would move them, so the preset would not stay as saved. Drag them apart or use Place beside."
         } }
         var seen: Set<Int> = [0]; var queue = [0]
         while let i = queue.popLast() { for j in b.indices where !seen.contains(j) && touches(b[i], b[j]) { seen.insert(j); queue.append(j) } }
         guard seen.count < b.count else { return nil }
         let lost = b.indices.filter { !seen.contains($0) }.map { names[b[$0].id] ?? "A display" }
-        return lost.joined(separator: ", ") + (lost.count == 1 ? " is" : " are") + " not touching the other displays. macOS closes gaps, so the preset would not stay as saved. Drag it against another display or use Place beside…."
+        return lost.joined(separator: ", ") + (lost.count == 1 ? " is" : " are") + " not touching the other displays. macOS closes gaps, so the preset would not stay as saved. Drag it against another display or use Place beside."
     }
 
     /// Nearest position at which `id` shares an edge (or a corner) with another extended display without overlapping any.
