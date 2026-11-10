@@ -58,7 +58,9 @@ Release: `tools/tdtp.sh` (full preflight) or `tools/dtp.sh` (build, `--diagnosti
 
 Settings live in the visible `~/DisplayMind/settings.json` folder. The app has no analytics or account. Display UUIDs, USB identities, and AirPlay receiver selections stay in local settings. macOS handles the network connection and screen streaming when AirPlay is selected. **Open data folder** reveals local settings. Invalid or newer settings files are preserved and reported instead of silently reset. Existing presets without an AirPlay setting retain their behavior.
 
-During a pending change, `pending-change.json` holds the previous configuration. A separate watchdog restores it when the deadline expires, even if the UI exits. A failed rollback retains a `restoring-*.json` snapshot and records the failure. Reopening the app resumes recovery for an interrupted pending change.
+During a pending change, `pending-change.json` holds the previous configuration. A separate watchdog restores it when the deadline expires, even if the UI exits. A failed rollback retains a `restoring-*.json` snapshot and records the failure. Reopening the app resumes recovery for an interrupted pending change. It also finishes a restore the watchdog claimed but never completed (a `restoring-*.json` with no result, under an hour old), and reports a failed recovery that happened while the app was closed, once.
+
+Automatic switches post a notification ("Automatically applied …"). With the window closed, errors post a notification and stay in the menu-bar menu as a line with **Dismiss error**; with the window open they appear as an alert. Allow notifications for DisplayMind in System Settings if macOS prompts.
 
 ## Compatibility
 
