@@ -14,7 +14,8 @@ enum Entry {
                 let displays = try DisplayBackend().read()
                 let devices = Hardware.devices()
                 _ = try Configuration.arguments(for: displays.map(\.setting))
-                print("DisplayMind: read-only diagnostics passed; \(displays.count) displays; \(devices.filter { $0.kind == .usb }.count) USB devices; capture validated.")
+                let sound = SystemAudio.current()
+                print("DisplayMind: read-only diagnostics passed; \(displays.count) displays; \(devices.filter { $0.kind == .usb }.count) USB devices; \(SystemAudio.devices(input: false).count) sound outputs (\(sound.output?.name ?? "none")); \(SystemAudio.devices(input: true).count) sound inputs (\(sound.input?.name ?? "none")); capture validated.")
                 exit(0)
             } catch { fputs("\(error.localizedDescription)\n", stderr); exit(1) }
         }

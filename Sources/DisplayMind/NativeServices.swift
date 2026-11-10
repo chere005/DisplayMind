@@ -322,12 +322,12 @@ struct RecoveryController {
     /// A `restoring-*.json` past the resume limit that no result accounts for: nobody will restore it. Returned once; it is renamed `abandoned-*` so it is never reported again.
     func takeStaleUnsettledRestore(maxAge: TimeInterval = 3600) -> RecoveryJournal? {
         let settled = result()?.id
-        // A result written after a snapshot means a later change was handled since; never re-apply the older layout.
+        // A result written after a snapshot means a later change was handled since; it is a kept record, not news.
         let settledAt = (try? resultURL.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate ?? .distantPast
         for url in snapshots() {
             guard let journal = try? JSONDecoder().decode(RecoveryJournal.self, from: Data(contentsOf: url)), journal.id != settled,
                   let modified = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate,
-                  Date().timeIntervalSince(modified) >= maxAge else { continue }
+                  Date().timeIntervalSince(modified) >= maxAge, modified > settledAt else { continue }
             try? FileManager.default.moveItem(at: url, to: directory.appendingPathComponent("abandoned-" + url.lastPathComponent.dropFirst("restoring-".count)))
             return journal
         }
