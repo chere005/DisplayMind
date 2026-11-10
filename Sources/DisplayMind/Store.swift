@@ -20,6 +20,8 @@ import ServiceManagement
     @Published var airPlayReceivers: [AirPlayReceiver] = []
     @Published var airPlayScanning = false
     @Published var airPlayAuthorized = false
+    /// Connected displays that are AirPlay receivers: display UUID → the receiver's own name, as Screen Mirroring lists it.
+    @Published var airPlayOnline: [String: String] = [:]
     /// The last error raised while no window was visible; shown in the menu until dismissed.
     @Published var menuError: String?
     let settingsFile: SettingsFile
@@ -81,17 +83,20 @@ import ServiceManagement
         }
         selectedPresetID = settings.presets.first?.id
         let recovery = self.recovery, disconnect: (AirPlayDestination) throws -> Void = { try airPlay.setConnected($0, false, {}) }
+        let connect: (AirPlayDestination) throws -> Void = { target in
+            try AirPlayConnection.ensure(target, online: hardware.connectedDisplayIDs, start: { try airPlay.setConnected(target, true, {}) })
+        }
         if let journal = recovery.read() {
             recoveryID = journal.id
             busy = true
             try? recovery.requestRevert()
-            Task.detached { recovery.watch(backend: backend, disconnectAirPlay: disconnect, audio: audio) }
+            Task.detached { recovery.watch(backend: backend, disconnectAirPlay: disconnect, connectAirPlay: connect, audio: audio) }
         } else if let orphan = recovery.orphanedRestore() {
             // The watchdog died after claiming the journal: finish the restore, verified and reported through tick().
             recoveryID = orphan.id
             busy = true
             status = "Restoring previous layout…"
-            Task.detached { recovery.resume(orphan, backend: backend, disconnectAirPlay: disconnect, audio: audio) }
+            Task.detached { recovery.resume(orphan, backend: backend, disconnectAirPlay: disconnect, connectAirPlay: connect, audio: audio) }
         } else if let result = recovery.result(), let failure = result.error, result.acknowledged != true {
             status = Self.attention
             recoveryUnacknowledged = true
@@ -213,7 +218,9 @@ import ServiceManagement
             let backend = self.backend
             let current = try await Task.detached { try backend.read() }.value
             displays = hardware.nameDisplays(current)
+            airPlayOnline = hardware.airPlayDisplays()
             adoptDisplayNames()
+            adoptAirPlay()
             if pending == nil && !busy && !recoveryUnacknowledged { status = idleStatus }
         } catch { report(error) }
     }
@@ -225,7 +232,9 @@ import ServiceManagement
             let backend = self.backend
             let current = try await Task.detached { try backend.read() }.value
             displays = hardware.nameDisplays(current)
-            editorPreset = Preset(name: "Preset \(settings.presets.count + 1)", displays: displays.map(\.setting), confirmed: true,
+            airPlayOnline = hardware.airPlayDisplays()
+            let cast = displays.first { airPlayOnline[$0.id] != nil }.map { AirPlayDestination(receiverName: receiverName(for: $0.setting), displayID: $0.id) }
+            editorPreset = Preset(name: "Preset \(settings.presets.count + 1)", displays: displays.map(\.setting), confirmed: true, airPlay: cast,
                                   audio: Optional(audio.current()).flatMap { $0.isEmpty ? nil : $0 })
         } catch { report(error) }
     }
@@ -245,7 +254,9 @@ import ServiceManagement
             preset.confirmed = Configuration.sameLayout(preset.displays, stored.displays) && preset.airPlay == stored.airPlay && stored.confirmed
             updated.presets[i] = preset
         } else {
-            preset.confirmed = preset.confirmed && preset.airPlay == nil && Configuration.matches(preset.displays, actual: displays.map(\.setting))
+            // A layout captured as it stands is proven, including one captured while its receiver was connected.
+            let castOnline = preset.airPlay.map { airPlayOnline[$0.displayID] != nil } ?? true
+            preset.confirmed = preset.confirmed && castOnline && Configuration.matches(preset.displays, actual: displays.map(\.setting))
             updated.presets.append(preset)
         }
         if persist(updated) { selectedPresetID = preset.id; showRules = false; editorPreset = nil; rearm() }
@@ -260,6 +271,28 @@ import ServiceManagement
         guard persist(updated) else { return false }
         if pending == nil && !busy && !recoveryUnacknowledged { status = idleStatus }
         return true
+    }
+    /// The name Screen Mirroring lists for the receiver behind a display.
+    func receiverName(for display: DisplaySetting) -> String {
+        airPlayOnline[display.id].flatMap { $0.isEmpty ? nil : $0 } ?? AirPlaySelection.receiverName(fromDisplay: display.name)
+    }
+    /// A preset that contains an AirPlay display connects its receiver when applied, without being told to: that is what the preset shows.
+    /// A saved receiver name that is really the display's name ("… (AirPlay)") is corrected to the receiver's.
+    private func adoptAirPlay() {
+        guard writable, !airPlayOnline.isEmpty else { return }
+        var updated = settings
+        for p in updated.presets.indices {
+            let preset = updated.presets[p]
+            if let target = preset.airPlay {
+                if let receiver = airPlayOnline[target.displayID], !receiver.isEmpty, receiver != target.receiverName, target.controlIdentifier == nil,
+                   AirPlaySelection.normalized(receiver) == AirPlaySelection.normalized(target.receiverName) {
+                    updated.presets[p].airPlay?.receiverName = receiver
+                }
+            } else if preset.manualAirPlay != true, let display = preset.displays.first(where: { $0.enabled && airPlayOnline[$0.id] != nil }) {
+                updated.presets[p].airPlay = AirPlayDestination(receiverName: receiverName(for: display), displayID: display.id)
+            }
+        }
+        if updated != settings { _ = persist(updated) }
     }
     /// A preset captured while macOS had no name for a display (a mirror) holds a placeholder such as "External display 2".
     /// Once the display reports its real name, the presets and rules that mention it take that name.
@@ -332,9 +365,16 @@ import ServiceManagement
             try Configuration.validate(preset)
             let soundBefore = audio.current()
             let current = try await Task.detached { try backend.read() }.value
+            let cast = hardware.airPlayDisplays()
+            airPlayOnline = cast
             if let reason = Configuration.availability(preset, connected: Set(current.map(\.id))) { throw DisplayMindError(reason) }
             _ = try Configuration.arguments(for: preset.displays)
-            if Configuration.matches(preset.displays, actual: current.map(\.setting)) {
+            // The preset says which displays there are. An AirPlay display it has no place for is a stream to stop.
+            let wanted = Set(preset.displays.map(\.id))
+            let stale = current.filter { cast[$0.id] != nil && !wanted.contains($0.id) }.map { display in
+                AirPlayDestination(receiverName: cast[display.id].flatMap { $0.isEmpty ? nil : $0 } ?? AirPlaySelection.receiverName(fromDisplay: display.setting.name), displayID: display.id)
+            }
+            if stale.isEmpty, Configuration.matches(preset.displays, actual: current.map(\.setting)) {
                 if !preset.confirmed { confirm(preset.id) }
                 var note: String?
                 if let wanted = preset.audio, wanted.differs(from: soundBefore) { note = await applySound(preset) }
@@ -344,12 +384,18 @@ import ServiceManagement
                 return
             }
             let needsAirPlay = preset.airPlay.map { target in !current.contains(where: { $0.id == target.displayID }) } ?? false
-            if needsAirPlay { try airPlay.requireAccess() }
-            var journal = try recovery.arm(previous: current.map(\.setting), previousAudio: preset.audio.flatMap { soundBefore.limited(to: $0) }, setupTimeout: needsAirPlay ? 240 : 120, launch: launchWatchdog)
+            let usesAirPlay = needsAirPlay || !stale.isEmpty
+            if usesAirPlay { try airPlay.requireAccess() }
+            var journal = try recovery.arm(previous: current.map(\.setting), previousAudio: preset.audio.flatMap { soundBefore.limited(to: $0) }, setupTimeout: usesAirPlay ? 240 : 120, launch: launchWatchdog)
             recoveryID = journal.id
+            let recovery = self.recovery, changeID = journal.id
+            for target in stale {
+                status = "Disconnecting AirPlay from \(target.receiverName)…"
+                try recovery.markAirPlayStopped(id: changeID, target: target)   // recorded first, so a revert reconnects it
+                try await Task.detached { try airPlay.setConnected(target, false, {}) }.value
+            }
             if needsAirPlay, let target = preset.airPlay {
                 status = "Connecting AirPlay to \(target.receiverName)…"
-                let recovery = self.recovery, changeID = journal.id
                 try await Task.detached {
                     try AirPlayConnection.ensure(target, online: hardware.connectedDisplayIDs, start: {
                         try airPlay.setConnected(target, true, {
@@ -360,7 +406,7 @@ import ServiceManagement
             }
             status = "Applying \(preset.name)…"
             var connected = current
-            if needsAirPlay { connected = try await Task.detached { try backend.read() }.value }
+            if usesAirPlay { connected = try await Task.detached { try backend.read() }.value }
             if let reason = Configuration.availability(preset, connected: Set(connected.map(\.id)), allowAirPlayConnection: false) { throw DisplayMindError(reason) }
             var actual = connected
             if !Configuration.matches(preset.displays, actual: connected.map(\.setting)) {
@@ -369,6 +415,7 @@ import ServiceManagement
                 }.value
             }
             displays = hardware.nameDisplays(actual)
+            airPlayOnline = hardware.airPlayDisplays()
             let note = await applySound(preset)
             if automatic {
                 try recovery.keep(id: journal.id)

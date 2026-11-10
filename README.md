@@ -26,17 +26,17 @@ An edited preset must be applied and kept once before it can run automatically. 
 
 ## AirPlay
 
-Capture a layout while the receiver is connected through macOS Screen Mirroring. In the preset editor, enable **Connect a receiver when applying**, choose **Its display**, and select the receiver with **Find receivers…** or enter its exact Screen Mirroring name. Find receivers briefly opens Control Center; it does not start streaming.
+A preset that contains an AirPlay display connects its receiver when it is applied, and a preset without that display stops the stream: the preset says which displays there are. Capture a layout while the receiver is connected through macOS Screen Mirroring and the preset is linked to it by itself; presets captured before 0.7.0 are linked the next time that display is connected. The editor's **AirPlay** section shows the receiver and its display, and **Connect a receiver when applying** turns the link off for a preset you would rather connect by hand.
 
 [AirPlay preset editor](docs/airplay-editor.png)
 
-**Allow AirPlay control** opens the macOS Accessibility permission settings. Enable DisplayMind there to allow it to use Screen Mirroring controls. This permission is required only when establishing or undoing an AirPlay connection; an existing stream is reused. Receiver pairing codes and macOS approval prompts remain under your control.
+**Allow AirPlay control** opens the macOS Accessibility permission settings. Enable DisplayMind there so it can use the Screen Mirroring controls. The permission is needed only to start or stop a stream. Receiver pairing codes and macOS approval prompts remain under your control.
 
-Applying the preset connects the receiver, waits up to 30 seconds for its saved display to appear, then applies the arrangement and presents Keep/Revert. Rollback disconnects a stream started by that change before restoring the previous layout, including if the app exits. Streams that were already connected remain connected. Switching to a preset without AirPlay does not disconnect existing streams.
+Applying a preset stops any AirPlay stream it has no display for, connects its own receiver and waits up to 30 seconds for that display, then applies the arrangement and presents Keep/Revert. Reverting puts the streams back as they were: one the change started is stopped, one it stopped is reconnected, including if the app exits.
 
 Connection rules can trigger while the preset’s AirPlay display is offline. Use a dock or another display as the connection condition; an explicit condition requiring the AirPlay display to be connected still means it must already be connected. An AirPlay connection made by DisplayMind does not immediately trigger another rule.
 
-Control Center must expose its Screen Mirroring controls to Accessibility. Device selection uses an exact saved control identifier or an unambiguous exact name; DisplayMind never falls back to an arbitrary receiver. If macOS changes a control or a saved display identity, the app reports the problem and recovers instead of guessing. This feature controls screen streaming, not audio-only AirPlay or Sidecar.
+DisplayMind recognises an AirPlay display from what macOS reports about it, and finds the receiver in Control Center's Screen Mirroring list by a saved control identifier or by name; it never falls back to an arbitrary receiver. On macOS 26 a connected receiver is stopped with its **Stop Mirroring**/**Stop Extending** button; earlier systems toggle its checkbox. If macOS moves those controls, `DisplayMind --airplay-probe report.txt --open` (launched with `open -n -g DisplayMind.app --args …` so the app's own permission applies) writes what Control Center exposes. This feature controls screen streaming, not audio-only AirPlay or Sidecar.
 
 ## Sound
 

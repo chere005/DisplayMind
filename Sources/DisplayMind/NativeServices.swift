@@ -124,9 +124,24 @@ enum Hardware {
               let symbol = dlsym(handle, "CoreDisplay_DisplayCreateInfoDictionary") else { return nil }
         return unsafeBitCast(symbol, to: DisplayInfo.self)
     }()
+    private static func info(_ id: CGDirectDisplayID) -> [String: Any]? {
+        id == 0 ? nil : displayInfo?(id)?.takeRetainedValue() as? [String: Any]
+    }
+    /// Online displays that are AirPlay receivers, as display UUID → the receiver's own name (the name Screen Mirroring lists).
+    static func airPlayDisplays() -> [String: String] {
+        var ids = [CGDirectDisplayID](repeating: 0, count: 32)
+        var count: UInt32 = 0
+        guard CGGetOnlineDisplayList(32, &ids, &count) == .success else { return [:] }
+        var result: [String: String] = [:]
+        for id in ids.prefix(Int(count)) {
+            guard let info = info(id), (info["kCGDisplayIsAirPlay"] as? NSNumber)?.boolValue == true,
+                  let uuid = CGDisplayCreateUUIDFromDisplayID(id)?.takeRetainedValue() else { continue }
+            result[CFUUIDCreateString(nil, uuid)! as String] = productName(id) ?? ""
+        }
+        return result
+    }
     static func productName(_ id: CGDirectDisplayID) -> String? {
-        guard id != 0, let info = displayInfo?(id)?.takeRetainedValue() as? [String: Any],
-              let names = info["DisplayProductName"] as? [String: String], !names.isEmpty else { return nil }
+        guard let info = info(id), let names = info["DisplayProductName"] as? [String: String], !names.isEmpty else { return nil }
         let wanted = Locale.preferredLanguages.map { $0.replacingOccurrences(of: "-", with: "_") } + ["en_US", "en"]
         let name = (wanted.lazy.compactMap { names[$0] }.first ?? names.sorted { $0.key < $1.key }.first?.value)?.trimmingCharacters(in: .whitespacesAndNewlines)
         return name.flatMap { $0.isEmpty ? nil : $0 }
@@ -374,7 +389,21 @@ struct RecoveryController {
     }
     func result() -> RecoveryResult? { try? JSONDecoder().decode(RecoveryResult.self, from: Data(contentsOf: resultURL)) }
 
-    func watch(backend: DisplayBackend, disconnectAirPlay: (AirPlayDestination) throws -> Void = { try AirPlayController().setConnected($0, false) }, audio: AudioActions = .live) {
+    func markAirPlayStopped(id: UUID, target: AirPlayDestination) throws {
+        try withLock {
+            guard var journal = read(), journal.id == id, journal.deadline > Date() else {
+                throw DisplayMindError("The display change has already started reverting.")
+            }
+            journal.stoppedAirPlay = (journal.stoppedAirPlay ?? []) + [target]
+            try write(journal)
+        }
+    }
+    /// Connects a receiver and waits for its display, with the real Screen Mirroring controls.
+    static func connectAirPlay(_ target: AirPlayDestination) throws {
+        try AirPlayConnection.ensure(target, online: Hardware.connectedDisplayIDs, start: { try AirPlayController().setConnected(target, true) })
+    }
+    func watch(backend: DisplayBackend, disconnectAirPlay: (AirPlayDestination) throws -> Void = { try AirPlayController().setConnected($0, false) },
+               connectAirPlay: (AirPlayDestination) throws -> Void = RecoveryController.connectAirPlay, audio: AudioActions = .live) {
         while let journal = read() {
             if journal.deadline > Date() { Thread.sleep(forTimeInterval: 0.25); continue }
             let claimed = directory.appendingPathComponent("restoring-\(journal.id).json")
@@ -388,7 +417,7 @@ struct RecoveryController {
                             try FileManager.default.moveItem(at: pendingURL, to: claimed)
                         }
                     } catch { return }
-                    restore(journal, claimed: claimed, backend: backend, disconnectAirPlay: disconnectAirPlay, audio: audio)
+                    restore(journal, claimed: claimed, backend: backend, disconnectAirPlay: disconnectAirPlay, connectAirPlay: connectAirPlay, audio: audio)
                     finished = true
                 }
             } catch {
@@ -402,12 +431,13 @@ struct RecoveryController {
         }
     }
     /// Resumes a restore whose watchdog died after claiming the journal. Blocks until any live restore finishes, then re-checks before acting.
-    func resume(_ journal: RecoveryJournal, backend: DisplayBackend, disconnectAirPlay: (AirPlayDestination) throws -> Void = { try AirPlayController().setConnected($0, false) }, audio: AudioActions = .live) {
+    func resume(_ journal: RecoveryJournal, backend: DisplayBackend, disconnectAirPlay: (AirPlayDestination) throws -> Void = { try AirPlayController().setConnected($0, false) },
+                connectAirPlay: (AirPlayDestination) throws -> Void = RecoveryController.connectAirPlay, audio: AudioActions = .live) {
         let claimed = directory.appendingPathComponent("restoring-\(journal.id).json")
         do {
             try withRestoreLock {
                 guard result()?.id != journal.id, FileManager.default.fileExists(atPath: claimed.path) else { return }   // the watchdog finished meanwhile: its result stands
-                restore(journal, claimed: claimed, backend: backend, disconnectAirPlay: disconnectAirPlay, audio: audio)
+                restore(journal, claimed: claimed, backend: backend, disconnectAirPlay: disconnectAirPlay, connectAirPlay: connectAirPlay, audio: audio)
             }
         } catch {
             let failure = RecoveryResult(id: journal.id, error: error.localizedDescription)
@@ -415,11 +445,17 @@ struct RecoveryController {
         }
     }
     /// The caller holds the restore lock.
-    private func restore(_ journal: RecoveryJournal, claimed: URL, backend: DisplayBackend, disconnectAirPlay: (AirPlayDestination) throws -> Void, audio: AudioActions) {
+    private func restore(_ journal: RecoveryJournal, claimed: URL, backend: DisplayBackend, disconnectAirPlay: (AirPlayDestination) throws -> Void,
+                         connectAirPlay: (AirPlayDestination) throws -> Void, audio: AudioActions) {
         var failure: String?
+        // A stream the change stopped comes back first, so the previous layout's displays exist again; if it cannot, the layout adapts below.
+        for target in journal.stoppedAirPlay ?? [] {
+            do { try connectAirPlay(target) }
+            catch { failure = [failure, "Could not reconnect AirPlay to \(target.receiverName): \(error.localizedDescription)"].compactMap { $0 }.joined(separator: " ") }
+        }
         if let target = journal.startedAirPlay {
             do { try disconnectAirPlay(target) }
-            catch { failure = "Could not stop the AirPlay connection started by this change: \(error.localizedDescription)" }
+            catch { failure = [failure, "Could not stop the AirPlay connection started by this change: \(error.localizedDescription)"].compactMap { $0 }.joined(separator: " ") }
         }
         do {
             let actual = try backend.read()

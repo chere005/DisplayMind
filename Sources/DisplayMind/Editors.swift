@@ -249,19 +249,24 @@ struct PresetEditor: View {
 
     // MARK: AirPlay
 
+    /// Displays that can be the receiver's: the ones macOS reports as AirPlay first, then any other that is not built in.
     private var airPlayDisplays: [DisplaySetting] {
-        draft.displays.filter { display in display.enabled && !store.displays.contains(where: { $0.id == display.id && $0.builtIn }) }
+        let candidates = draft.displays.filter { display in display.enabled && !store.displays.contains(where: { $0.id == display.id && $0.builtIn }) }
+        return candidates.filter { store.airPlayOnline[$0.id] != nil } + candidates.filter { store.airPlayOnline[$0.id] == nil }
     }
     private var airPlayControls: some View {
         VStack(alignment: .leading, spacing: 12) {
             SectionLabel("AirPlay")
             Toggle("Connect a receiver when applying", isOn: Binding(get: { draft.airPlay != nil }, set: { enabled in
                 if enabled, let display = airPlayDisplays.first {
-                    draft.airPlay = AirPlayDestination(receiverName: display.name, displayID: display.id)
-                } else { draft.airPlay = nil }
+                    draft.manualAirPlay = nil
+                    draft.airPlay = AirPlayDestination(receiverName: store.receiverName(for: display), displayID: display.id)
+                } else { draft.airPlay = nil; draft.manualAirPlay = true }   // off by choice: not switched back on for containing an AirPlay display
             })).disabled(airPlayDisplays.isEmpty)
             if airPlayDisplays.isEmpty {
                 note("Connect the receiver with macOS Screen Mirroring, then capture that layout so its display is part of a preset.")
+            } else if draft.airPlay == nil {
+                note("Off: this preset needs the receiver connected by hand before it can be applied.")
             }
             if let target = draft.airPlay {
                 Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 10, verticalSpacing: 12) {
@@ -296,7 +301,7 @@ struct PresetEditor: View {
                         PopUp(label: "AirPlay display", options: airPlayDisplays.map { ($0.id, $0.name) }, selection: Binding(get: { target.displayID }, set: { draft.airPlay?.displayID = $0 })).frame(width: fieldWidth)
                     }
                 }
-                note("DisplayMind connects the receiver, waits for this display, then arranges. Finding receivers briefly opens Screen Mirroring; a first-time receiver may ask for a pairing code.")
+                note("DisplayMind connects the receiver, waits for this display, then arranges. A preset without this display stops the stream. Finding receivers briefly opens Screen Mirroring; a first-time receiver may ask for a pairing code.")
                 if !store.airPlayAuthorized {
                     HStack(alignment: .firstTextBaseline, spacing: 8) {
                         Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)

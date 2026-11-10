@@ -25,6 +25,8 @@ public struct RecoveryJournal: Codable {
     public var deadline: Date
     public var previous: [DisplaySetting]
     public var startedAirPlay: AirPlayDestination?
+    /// AirPlay streams this change stopped because the new preset has no place for their display; a revert reconnects them.
+    public var stoppedAirPlay: [AirPlayDestination]?
     /// The default sound devices before the change (only the sides the change overwrote); absent in older journals.
     public var previousAudio: AudioSelection?
     public init(id: UUID = UUID(), deadline: Date, previous: [DisplaySetting], previousAudio: AudioSelection? = nil) {

@@ -12,7 +12,7 @@ struct AirPlayController {
     }
     static func requireAccess() throws {
         guard authorized else {
-            throw DisplayMindError("Allow DisplayMind in System Settings → Privacy & Security → Accessibility to connect AirPlay. Use Allow AirPlay control in the preset editor.")
+            throw DisplayMindError("Allow DisplayMind in System Settings → Privacy & Security → Accessibility so it can start and stop AirPlay. Use Allow AirPlay control in the preset editor.")
         }
     }
 
@@ -39,7 +39,7 @@ struct AirPlayController {
                let row = rows.first(where: { $0.receiver.id == receiver.id }) {
                 if try AirPlaySelection.shouldPress(receiver, connecting: connecting) {
                     if connecting { try beforeConnect() } // persist ownership BEFORE starting the stream
-                    try press(row.element)
+                    try press(connecting ? row.control : row.stop ?? row.control)
                     Thread.sleep(forTimeInterval: 0.3)
                 }
                 if !connecting {
@@ -55,6 +55,38 @@ struct AirPlayController {
             Thread.sleep(forTimeInterval: 0.25)
         } while Date() < deadline
         throw DisplayMindError("AirPlay receiver \(target.receiverName) was not found in Screen Mirroring. Make sure it is awake and available on this network.")
+    }
+
+    /// What Control Center exposes to Accessibility on this Mac, for diagnosing a macOS that moved its controls.
+    /// With `open` it opens the Screen Mirroring list, reads it and closes it again. It never presses a receiver.
+    func probe(open: Bool) -> String {
+        var lines = ["accessibility access: \(Self.authorized ? "allowed" : "NOT allowed")"]
+        guard Self.authorized else { return lines.joined(separator: "\n") }
+        guard let process = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.controlcenter").first else {
+            return (lines + ["Control Center is not running"]).joined(separator: "\n")
+        }
+        let app = AXUIElementCreateApplication(process.processIdentifier)
+        AXUIElementSetMessagingTimeout(app, 1)
+        func describe(_ element: AXUIElement, depth: Int, limit: Int) {
+            guard depth < limit, lines.count < 600 else { return }
+            var names: CFArray?
+            AXUIElementCopyActionNames(element, &names)
+            let value = Self.attribute(element, kAXValueAttribute).map { String("\($0)".prefix(40)) } ?? ""
+            lines.append(String(repeating: "  ", count: depth) + "\(string(element, kAXRoleAttribute)) id=\(string(element, kAXIdentifierAttribute)) title=\(string(element, kAXTitleAttribute)) desc=\(string(element, kAXDescriptionAttribute)) value=\(value) actions=\((names as? [String] ?? []).map { String($0.prefix(60)).replacingOccurrences(of: "\n", with: " ") }.joined(separator: "|"))")
+            for child in Self.elements(element, kAXChildrenAttribute) { describe(child, depth: depth + 1, limit: limit) }
+        }
+        lines.append("menu bar:")
+        for bar in Self.elements(app, kAXExtrasMenuBarAttribute) + Self.elements(app, kAXMenuBarAttribute) { describe(bar, depth: 1, limit: 3) }
+        guard open else { return lines.joined(separator: "\n") }
+        do {
+            let panel = try openPanel()
+            defer { panel.dismiss() }
+            Thread.sleep(forTimeInterval: 1)
+            lines.append("opened Screen Mirroring \(panel.opener == nil ? "(already open)" : "with a menu-bar control"); windows:")
+            for window in Self.elements(app, kAXWindowsAttribute) { describe(window, depth: 1, limit: 12) }
+            lines.append("receivers read: " + receiverRows(app).map { "\($0.receiver.name) [\($0.receiver.id)] selected=\($0.receiver.selected.map(String.init) ?? "unknown") stop=\($0.stop != nil)" }.joined(separator: "; "))
+        } catch { lines.append("could not open Screen Mirroring: \(error.localizedDescription)"); lines.append("windows:"); for window in Self.elements(app, kAXWindowsAttribute) { describe(window, depth: 1, limit: 12) } }
+        return lines.joined(separator: "\n")
     }
 
     private struct Panel {
@@ -109,22 +141,41 @@ struct AirPlayController {
         }
     }
 
-    private func receiverRows(_ app: AXUIElement) -> [(receiver: AirPlayReceiver, element: AXUIElement)] {
-        let nodes = Self.elements(app, kAXWindowsAttribute).flatMap(tree)
-        return nodes.compactMap { node in
+    /// One receiver in the Screen Mirroring list: the control that connects it and, while it is connected on macOS 26, the button that stops it.
+    private struct Row {
+        var receiver: AirPlayReceiver
+        var control: AXUIElement
+        var stop: AXUIElement?
+    }
+    private func receiverRows(_ app: AXUIElement) -> [Row] {
+        let prefix = "screen-mirroring-device-"
+        var order: [String] = [], groups: [String: [AXUIElement]] = [:]
+        for node in Self.elements(app, kAXWindowsAttribute).flatMap(tree) {
             let identifier = string(node, kAXIdentifierAttribute)
-            guard string(node, kAXRoleAttribute) == kAXCheckBoxRole,
-                  identifier.hasPrefix("screen-mirroring-device-"),
-                  !identifier.hasPrefix("screen-mirroring-device-Sidecar") else { return nil }
-            let labels = [string(node, kAXTitleAttribute), string(node, kAXDescriptionAttribute)] +
-                Self.elements(node, kAXChildrenAttribute).filter { string($0, kAXRoleAttribute) == kAXStaticTextRole }.map { string($0, kAXValueAttribute) }
-            let name = labels.first { !$0.isEmpty } ?? String(identifier.dropFirst("screen-mirroring-device-".count))
-            let value = Self.attribute(node, kAXValueAttribute)
-            let selected: Bool?
-            if let number = value as? NSNumber, [0,1].contains(number.intValue) { selected = number.boolValue }
+            guard identifier.hasPrefix(prefix), !identifier.hasPrefix(prefix + "Sidecar"), identifier != prefix + "list" else { continue }
+            if groups[identifier] == nil { order.append(identifier) }
+            groups[identifier, default: []].append(node)
+        }
+        return order.compactMap { identifier in
+            let group = groups[identifier] ?? []
+            func role(_ element: AXUIElement) -> String { string(element, kAXRoleAttribute) }
+            func label(_ element: AXUIElement) -> String {
+                ([string(element, kAXTitleAttribute), string(element, kAXDescriptionAttribute)] +
+                    Self.elements(element, kAXChildrenAttribute).filter { role($0) == kAXStaticTextRole }.map { string($0, kAXValueAttribute) }).first { !$0.isEmpty } ?? ""
+            }
+            // macOS 13–15 list each receiver as a checkbox that toggles it. macOS 26 shows a connected receiver as a disclosure
+            // triangle with "Change" and "Stop Mirroring"/"Stop Extending" buttons beside it; every one carries the receiver's identifier.
+            let toggles = group.filter { [kAXCheckBoxRole, kAXDisclosureTriangleRole, kAXRadioButtonRole].contains(role($0)) }
+            let buttons = group.filter { role($0) == kAXButtonRole }
+            let stop = buttons.first { label($0).hasPrefix("Stop") } ?? (toggles.isEmpty ? nil : buttons.count > 1 ? buttons.last : nil)
+            guard let control = toggles.first ?? buttons.first(where: { !label($0).isEmpty }) else { return nil }
+            let value = Self.attribute(control, kAXValueAttribute)
+            var selected: Bool?
+            if let number = value as? NSNumber, [0, 1].contains(number.intValue) { selected = number.boolValue }
             else if let text = value as? String, ["0", "1"].contains(text) { selected = text == "1" }
-            else { selected = nil }
-            return (AirPlayReceiver(id: identifier, name: name, selected: selected), node)
+            if stop != nil { selected = true }
+            let name = label(control)
+            return Row(receiver: AirPlayReceiver(id: identifier, name: name.isEmpty ? String(identifier.dropFirst(prefix.count)) : name, selected: selected), control: control, stop: stop)
         }
     }
     private func waitFor(_ root: AXUIElement, timeout: TimeInterval, predicate: (AXUIElement) -> Bool) -> AXUIElement? {

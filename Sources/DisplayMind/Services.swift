@@ -7,7 +7,10 @@ struct HardwareProvider {
     var devices: @Sendable () -> [Device]
     var connectedDisplayIDs: @Sendable () -> Set<String>
     var nameDisplays: @MainActor ([ConnectedDisplay]) -> [ConnectedDisplay]
-    static let live = HardwareProvider(devices: { Hardware.devices() }, connectedDisplayIDs: { Hardware.connectedDisplayIDs() }, nameDisplays: { Hardware.nameDisplays($0) })
+    /// Online displays that are AirPlay receivers: display UUID → the receiver's own name.
+    var airPlayDisplays: @Sendable () -> [String: String] = { [:] }
+    static let live = HardwareProvider(devices: { Hardware.devices() }, connectedDisplayIDs: { Hardware.connectedDisplayIDs() }, nameDisplays: { Hardware.nameDisplays($0) },
+                                       airPlayDisplays: { Hardware.airPlayDisplays() })
 }
 
 enum HardwareChange { case displays, usb, wake }

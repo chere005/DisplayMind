@@ -25,6 +25,27 @@ enum Entry {
                 exit(0)
             } catch { fputs("\(error.localizedDescription)\n", stderr); exit(1) }
         }
+        if let index = CommandLine.arguments.firstIndex(of: "--airplay-probe"), CommandLine.arguments.count > index + 1 {
+            // Launch through LaunchServices (`open -n -g DisplayMind.app --args --airplay-probe file [--open]`) so macOS applies the app's own Accessibility grant.
+            let report = AirPlayController().probe(open: CommandLine.arguments.contains("--open"))
+            try? report.write(toFile: CommandLine.arguments[index + 1], atomically: true, encoding: .utf8)
+            exit(0)
+        }
+        if let index = CommandLine.arguments.firstIndex(where: { $0 == "--airplay-connect" || $0 == "--airplay-disconnect" }), CommandLine.arguments.count > index + 3 {
+            // Developer check of the real connect/disconnect path: <receiver name> <display UUID> <report file>. Launch through LaunchServices as above.
+            let connecting = CommandLine.arguments[index] == "--airplay-connect"
+            let target = AirPlayDestination(receiverName: CommandLine.arguments[index + 1], displayID: CommandLine.arguments[index + 2])
+            let started = Date()
+            var report: String
+            do {
+                if connecting { try AirPlayConnection.ensure(target, online: Hardware.connectedDisplayIDs, start: { try AirPlayController().setConnected(target, true) }) }
+                else { try AirPlayController().setConnected(target, false) }
+                report = "ok"
+            } catch { report = "FAILED: \(error.localizedDescription)" }
+            report += String(format: " after %.1f s; display online: \(Hardware.connectedDisplayIDs().contains(target.displayID)); AirPlay displays: \(Hardware.airPlayDisplays())", Date().timeIntervalSince(started))
+            try? report.write(toFile: CommandLine.arguments[index + 3], atomically: true, encoding: .utf8)
+            exit(0)
+        }
         if CommandLine.arguments.contains("--airplay-access-status") {
             print(AirPlayController.authorized ? "AirPlay Accessibility access: allowed" : "AirPlay Accessibility access: not allowed")
             exit(0)

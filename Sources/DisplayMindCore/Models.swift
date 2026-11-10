@@ -74,6 +74,8 @@ public struct Preset: Codable, Equatable, Identifiable {
     public var displays: [DisplaySetting]
     public var confirmed: Bool
     public var airPlay: AirPlayDestination?
+    /// The user turned off connecting the receiver for this preset, so it is not turned back on because the preset contains an AirPlay display.
+    public var manualAirPlay: Bool?
     public var audio: AudioSelection?
     public init(id: UUID = UUID(), name: String, displays: [DisplaySetting], confirmed: Bool = false, airPlay: AirPlayDestination? = nil, audio: AudioSelection? = nil) {
         self.id = id; self.name = name; self.displays = displays; self.confirmed = confirmed
