@@ -54,8 +54,8 @@ struct PresetEditor: View {
                 }.buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction).disabled(draft.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
         }.padding(26).frame(width: 740, height: 720).background(Color(nsColor: .windowBackgroundColor))
-            .alert("DisplayMind", isPresented: Binding(get: { store.error != nil }, set: { if !$0 { store.error = nil } })) {
-                Button("OK", role: .cancel) { store.error = nil }
+            .alert("DisplayMind", isPresented: Binding(get: { store.error != nil }, set: { if !$0 { store.dismissError() } })) {
+                Button("OK", role: .cancel) { store.dismissError() }
             } message: { Text(store.error ?? "") }
     }
     private var airPlayDisplays: [DisplaySetting] {

@@ -46,7 +46,7 @@ on_exit() {
   if [ "$CODE" != 0 ]; then
     # A bump that never reached a commit is undone.
     if [ "$BUMPED" = 1 ] && [ "$DRY" = 0 ]; then
-      git checkout -- VERSION "$PLIST" 2>/dev/null || true
+      git checkout HEAD -- VERSION "$PLIST" 2>/dev/null || true
       say 'restored VERSION and Info.plist' >&2
     fi
     if [ -z "$REPORTED" ]; then report finish failed 3 "Stopped before release completed."; fi
@@ -131,6 +131,16 @@ $OTHER"
     run sh tools/build.sh release
     run dist/DisplayMind.app/Contents/MacOS/DisplayMind --diagnostics
     run python3 tools/check-watchdog.py
+  fi
+
+  # --- signature: an ad hoc build must not ship (zero or several Developer ID identities make build.sh fall back)
+  if [ "$DRY" = 1 ]; then
+    printf '+ verify dist/DisplayMind.app is not ad hoc signed\n'
+  elif [ "${DISPLAYMIND_ALLOW_ADHOC_RELEASE:-0}" != 1 ]; then
+    SIG=$(codesign -dv dist/DisplayMind.app 2>&1) || fail 'could not read the signature of dist/DisplayMind.app'
+    case "$SIG" in
+      *Signature=adhoc*) fail 'dist/DisplayMind.app is ad hoc signed (need exactly one Developer ID Application identity); set DISPLAYMIND_ALLOW_ADHOC_RELEASE=1 to override' ;;
+    esac
   fi
 
   # --- commit, tag, push

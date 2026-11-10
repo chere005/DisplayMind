@@ -15,6 +15,9 @@ die() { echo "$*" >&2; exit 1; }
 
 test -d dist/DisplayMind.app || die 'Build the app with tools/preflight.sh first.'
 [ ! -e "$STATE_DIR/pending-change.json" ] || die "A display change is pending ($STATE_DIR/pending-change.json); keep or revert it first."
+for F in "$STATE_DIR"/restoring-*.json; do
+  [ ! -e "$F" ] || die "A display recovery is in progress or unsettled ($F); let it finish or restore the layout first."
+done
 codesign --verify --deep --strict dist/DisplayMind.app
 mkdir -p "$DEST"
 TARGET="$DEST/DisplayMind.app"
@@ -38,14 +41,20 @@ rm -rf "$STAGE"
 ditto dist/DisplayMind.app "$STAGE"
 codesign --verify --deep --strict "$STAGE"
 
+# Real install only: the Apple event may be refused (no Automation consent), so pgrep also counts.
+is_running() {
+  [ "$(osascript -e "application id \"$BUNDLE_ID\" is running" 2>/dev/null || echo false)" = true ] || pgrep -x DisplayMind >/dev/null 2>&1
+}
+
 if [ "$REAL" = 1 ] && [ -e "$TARGET" ]; then
-  if [ "$(osascript -e "application id \"$BUNDLE_ID\" is running" 2>/dev/null || echo false)" = true ]; then
+  if is_running; then
     WAS_RUNNING=1
-    osascript -e "tell application id \"$BUNDLE_ID\" to quit" >/dev/null 2>&1 || true
+    osascript -e "tell application id \"$BUNDLE_ID\" to quit" >/dev/null 2>&1 || pkill -TERM -x DisplayMind || true
     N=0
-    while [ "$(osascript -e "application id \"$BUNDLE_ID\" is running" 2>/dev/null || echo false)" = true ]; do
+    while is_running; do
       N=$((N + 1))
       [ "$N" -le 20 ] || die 'DisplayMind did not quit within 10 seconds; leaving the installed copy untouched.'
+      [ "$N" -ne 6 ] || pkill -TERM -x DisplayMind || true   # the Apple event did not take effect within 3 s
       sleep 0.5
     done
   fi

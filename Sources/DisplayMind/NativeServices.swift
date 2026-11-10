@@ -135,7 +135,9 @@ final class LiveHardwareMonitor {
         iterators.forEach { IOObjectRelease($0) }
         if let port { IONotificationPortDestroy(port) }
         sink.handler = nil
-        Unmanaged<Sink>.fromOpaque(context).release()
+        // A callback already queued on the main queue still holds the context; release it behind that queue.
+        let address = UInt(bitPattern: context)
+        DispatchQueue.main.async { Unmanaged<Sink>.fromOpaque(UnsafeRawPointer(bitPattern: address)!).release() }
     }
 }
 
@@ -151,6 +153,17 @@ struct RecoveryController {
         guard fd >= 0 else { throw DisplayMindError("Could not open the display recovery lock.") }
         defer { close(fd) }
         guard flock(fd, LOCK_EX) == 0 else { throw DisplayMindError("Could not lock display recovery.") }
+        defer { flock(fd, LOCK_UN) }
+        return try body()
+    }
+    /// Held by whoever applies a restore, for its whole duration (the watchdog, or the app resuming an orphan); separate from the short-lived `recovery.lock`.
+    var restoringLockURL: URL { directory.appendingPathComponent("restoring.lock") }
+    func withRestoreLock<T>(_ body: () throws -> T) throws -> T {
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let fd = open(restoringLockURL.path, O_CREAT | O_RDWR, 0o600)
+        guard fd >= 0 else { throw DisplayMindError("Could not open the display restore lock.") }
+        defer { close(fd) }
+        while flock(fd, LOCK_EX) != 0 { guard errno == EINTR else { throw DisplayMindError("Could not lock the display restore.") } }
         defer { flock(fd, LOCK_UN) }
         return try body()
     }
@@ -217,6 +230,18 @@ struct RecoveryController {
         }
         return nil
     }
+    /// A `restoring-*.json` past the resume limit that no result accounts for: nobody will restore it. Returned once; it is renamed `abandoned-*` so it is never reported again.
+    func takeStaleUnsettledRestore(maxAge: TimeInterval = 3600) -> RecoveryJournal? {
+        let settled = result()?.id
+        for url in snapshots() {
+            guard let journal = try? JSONDecoder().decode(RecoveryJournal.self, from: Data(contentsOf: url)), journal.id != settled,
+                  let modified = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate,
+                  Date().timeIntervalSince(modified) >= maxAge else { continue }
+            try? FileManager.default.moveItem(at: url, to: directory.appendingPathComponent("abandoned-" + url.lastPathComponent.dropFirst("restoring-".count)))
+            return journal
+        }
+        return nil
+    }
     /// Marks a failed result as shown. The `restoring-*.json` snapshot stays.
     func acknowledge() {
         guard var result = result(), result.error != nil, result.acknowledged != true else { return }
@@ -242,20 +267,43 @@ struct RecoveryController {
         while let journal = read() {
             if journal.deadline > Date() { Thread.sleep(forTimeInterval: 0.25); continue }
             let claimed = directory.appendingPathComponent("restoring-\(journal.id).json")
+            var finished = false
             do {
-                try withLock {
-                    guard let current = read(), current.id == journal.id, current.deadline <= Date() else { throw DisplayMindError("Recovery was cancelled or extended.") }
-                    try FileManager.default.moveItem(at: pendingURL, to: claimed)
+                // The restore lock is taken before claiming, so an app resuming an orphan can never overlap this restore.
+                try withRestoreLock {
+                    do {
+                        try withLock {
+                            guard let current = read(), current.id == journal.id, current.deadline <= Date() else { throw DisplayMindError("Recovery was cancelled or extended.") }
+                            try FileManager.default.moveItem(at: pendingURL, to: claimed)
+                        }
+                    } catch { return }
+                    restore(journal, claimed: claimed, backend: backend, disconnectAirPlay: disconnectAirPlay)
+                    finished = true
                 }
-            } catch { if read() != nil { continue }; return }
-            restore(journal, claimed: claimed, backend: backend, disconnectAirPlay: disconnectAirPlay)
+            } catch {
+                let failure = RecoveryResult(id: journal.id, error: error.localizedDescription)
+                if let data = try? JSONEncoder().encode(failure) { try? data.write(to: resultURL, options: .atomic) }
+                return
+            }
+            if finished { return }
+            if read() != nil { continue }
             return
         }
     }
-    /// Resumes a restore whose watchdog died after claiming the journal.
+    /// Resumes a restore whose watchdog died after claiming the journal. Blocks until any live restore finishes, then re-checks before acting.
     func resume(_ journal: RecoveryJournal, backend: DisplayBackend, disconnectAirPlay: (AirPlayDestination) throws -> Void = { try AirPlayController().setConnected($0, false) }) {
-        restore(journal, claimed: directory.appendingPathComponent("restoring-\(journal.id).json"), backend: backend, disconnectAirPlay: disconnectAirPlay)
+        let claimed = directory.appendingPathComponent("restoring-\(journal.id).json")
+        do {
+            try withRestoreLock {
+                guard result()?.id != journal.id, FileManager.default.fileExists(atPath: claimed.path) else { return }   // the watchdog finished meanwhile: its result stands
+                restore(journal, claimed: claimed, backend: backend, disconnectAirPlay: disconnectAirPlay)
+            }
+        } catch {
+            let failure = RecoveryResult(id: journal.id, error: error.localizedDescription)
+            if let data = try? JSONEncoder().encode(failure) { try? data.write(to: resultURL, options: .atomic) }
+        }
     }
+    /// The caller holds the restore lock.
     private func restore(_ journal: RecoveryJournal, claimed: URL, backend: DisplayBackend, disconnectAirPlay: (AirPlayDestination) throws -> Void) {
         var failure: String?
         if let target = journal.startedAirPlay {

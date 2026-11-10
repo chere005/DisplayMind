@@ -31,6 +31,31 @@ struct AirPlayActions {
                                      setConnected: { try AirPlayController().setConnected($0, $1, beforeConnect: $2) })
 }
 
+/// Owns the notification center delegate (banners while the app is frontmost) and asks for authorization only once.
+final class NotificationPresenter: NSObject, UNUserNotificationCenterDelegate, @unchecked Sendable {
+    static let shared = NotificationPresenter()
+    private let lock = NSLock()
+    private var requested = false, granted: Bool?
+    private var waiting: [(Bool) -> Void] = []
+    func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification, withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
+        completionHandler([.banner])
+    }
+    func whenAuthorized(_ center: UNUserNotificationCenter, _ body: @escaping (Bool) -> Void) {
+        lock.lock()
+        if let granted { lock.unlock(); body(granted); return }
+        waiting.append(body)
+        let first = !requested
+        requested = true
+        lock.unlock()
+        guard first else { return }
+        center.delegate = self
+        center.requestAuthorization(options: [.alert]) { ok, _ in
+            self.lock.lock(); self.granted = ok; let pending = self.waiting; self.waiting = []; self.lock.unlock()
+            pending.forEach { $0(ok) }
+        }
+    }
+}
+
 /// User notifications, authorized lazily on first use. Never active outside the installed app bundle.
 struct Notifier {
     var post: (_ title: String, _ body: String) -> Void
@@ -38,7 +63,7 @@ struct Notifier {
     static let live = Notifier { title, body in
         guard Bundle.main.bundleURL.pathExtension == "app", Bundle.main.bundleIdentifier != nil else { return }
         let center = UNUserNotificationCenter.current()
-        center.requestAuthorization(options: [.alert]) { granted, _ in
+        NotificationPresenter.shared.whenAuthorized(center) { granted in
             guard granted else { return }
             let content = UNMutableNotificationContent()
             content.title = title; content.body = body

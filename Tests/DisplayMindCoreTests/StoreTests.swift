@@ -171,20 +171,40 @@ final class StoreTests: XCTestCase {
     func writeResult(_ result: RecoveryResult) throws {
         try JSONEncoder().encode(result).write(to: data.appendingPathComponent("recovery-result.json"))
     }
-    @MainActor func testFailedResultWrittenWhileClosedIsShownOnceAndSnapshotKept() throws {
+    @MainActor func testFailedResultWrittenWhileClosedIsShownUntilDismissedAndSnapshotKept() async throws {
         let backend = try backend(current: previous)
         let journal = RecoveryJournal(deadline: .distantPast, previous: previous)
         try writeSnapshot(journal)
         try writeResult(RecoveryResult(id: journal.id, error: "simulated failure"))
         let store = makeStore(backend)
         XCTAssertTrue(store.menuError?.contains("simulated failure") == true)
+        XCTAssertTrue(store.error?.contains("simulated failure") == true, "the window shows the alert when it opens")
         XCTAssertEqual(posts.items.count, 1); XCTAssertEqual(store.status, "Display recovery needs attention")
         XCTAssertFalse(store.busy)
+        XCTAssertNotEqual(RecoveryController(directory: data).result()?.acknowledged, true, "not acknowledged at detection")
+        await store.refresh()
+        XCTAssertEqual(store.status, "Display recovery needs attention", "the first refresh must not overwrite it")
+        let unseen = makeStore(backend)   // quit without opening the menu: shown again next launch
+        XCTAssertNotNil(unseen.menuError)
+        store.dismissError()
+        XCTAssertNil(store.menuError); XCTAssertNil(store.error)
         XCTAssertEqual(RecoveryController(directory: data).result()?.acknowledged, true)
+        await store.refresh()
+        XCTAssertEqual(store.status, "2 displays connected")
         XCTAssertTrue(FileManager.default.fileExists(atPath: data.appendingPathComponent("restoring-\(journal.id).json").path))
         XCTAssertEqual(applyCalls(), 0)
         let second = makeStore(backend)
-        XCTAssertNil(second.menuError); XCTAssertEqual(posts.items.count, 1); XCTAssertFalse(second.busy)
+        XCTAssertNil(second.menuError); XCTAssertNil(second.error); XCTAssertEqual(posts.items.count, 2); XCTAssertFalse(second.busy)
+    }
+    @MainActor func testDismissingTheMenuLineAcknowledgesTheFailure() throws {
+        let backend = try backend(current: previous)
+        let journal = RecoveryJournal(deadline: .distantPast, previous: previous)
+        try writeSnapshot(journal)
+        try writeResult(RecoveryResult(id: journal.id, error: "simulated failure"))
+        let store = makeStore(backend)
+        store.dismissMenuError()
+        XCTAssertEqual(RecoveryController(directory: data).result()?.acknowledged, true)
+        XCTAssertNil(store.error)
     }
     @MainActor func testOrphanedRestoreIsResumedVerifiedAndReported() async throws {
         let backend = try backend(current: target, steps: [1: previous])
@@ -208,14 +228,21 @@ final class StoreTests: XCTestCase {
         XCTAssertTrue(store.menuError?.contains("macOS did not restore every display setting") == true)
         XCTAssertTrue(FileManager.default.fileExists(atPath: data.appendingPathComponent("restoring-\(journal.id).json").path))
         let calls = applyCalls()
+        store.dismissMenuError()
         let second = makeStore(backend)
         XCTAssertFalse(second.busy); XCTAssertNil(second.menuError); XCTAssertEqual(applyCalls(), calls)
     }
     @MainActor func testStaleOrSupersededSnapshotsAreNotResumed() async throws {
         let backend = try backend(current: target, steps: [1: previous])
-        try writeSnapshot(RecoveryJournal(deadline: .distantPast, previous: previous), age: 7200)
-        XCTAssertFalse(makeStore(backend).busy)
+        let stale = RecoveryJournal(deadline: .distantPast, previous: previous)
+        try writeSnapshot(stale, age: 7200)
+        let first = makeStore(backend)
+        XCTAssertFalse(first.busy)
         XCTAssertEqual(applyCalls(), 0)
+        XCTAssertTrue(first.menuError?.contains("previous display layout was not restored") == true)
+        XCTAssertNotNil(first.error)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: data.appendingPathComponent("abandoned-\(stale.id).json").path))
+        XCTAssertNil(makeStore(backend).menuError, "reported once")
         // A new armed change moves older snapshots aside.
         let recovery = RecoveryController(directory: data)
         let fresh = RecoveryJournal(deadline: .distantPast, previous: previous)
@@ -319,7 +346,11 @@ final class StoreTests: XCTestCase {
         await eventually { !store.isTicking }
         let before = fake.reads
         fake.set(bothDisplays)
-        for i in 0..<20 { monitor.fire(i % 2 == 0 ? .usb : .displays) }
+        // Events arrive over several turns, each inside the coalesce interval, so every one restarts the debounce.
+        for i in 0..<20 {
+            monitor.fire(i % 2 == 0 ? .usb : .displays)
+            if i % 5 == 4 { try await Task.sleep(nanoseconds: 20_000_000) }
+        }
         await eventually { self.applyCalls() == 1 && !store.isTicking }
         XCTAssertEqual(applyCalls(), 1); XCTAssertEqual(posts.items.count, 1)
         XCTAssertLessThanOrEqual(fake.reads - before, 4)   // 1 coalesced read + settle read + the post-apply consume (+1 slack), not one per event

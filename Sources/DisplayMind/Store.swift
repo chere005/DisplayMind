@@ -48,8 +48,11 @@ import ServiceManagement
     private var polling = false
     private var writable = true
     private var applyFailure: String?
+    /// A failed recovery has been shown but the user has not dismissed it; it stays unacknowledged on disk (and the status stays) until they do.
+    private var recoveryUnacknowledged = false
     private var recoveryID: UUID? { didSet { syncTimers() } }
     /// True while a countdown, recovery wait, settle window or pending coalesced change needs timer wake-ups (the 60 s fallback does not count).
+    static let attention = "Display recovery needs attention"
     var isTicking: Bool { ticker != nil || debounce != nil }
 
     struct PendingChange { var journal: RecoveryJournal; var preset: Preset }
@@ -68,7 +71,7 @@ import ServiceManagement
         airPlayAuthorized = airPlay.authorized()
         if demo { loadDemo(); return }
         do { settings = try settingsFile.load() } catch {
-            fail("Settings could not be opened: \(error.localizedDescription)")
+            failAtLaunch("Settings could not be opened: \(error.localizedDescription)")
             writable = false
         }
         selectedPresetID = settings.presets.first?.id
@@ -85,9 +88,13 @@ import ServiceManagement
             status = "Restoring previous layout…"
             Task.detached { recovery.resume(orphan, backend: backend, disconnectAirPlay: disconnect) }
         } else if let result = recovery.result(), let failure = result.error, result.acknowledged != true {
-            status = "Display recovery needs attention"
-            fail("A display recovery that ran while DisplayMind was closed failed. " + failure)
-            recovery.acknowledge()
+            status = Self.attention
+            recoveryUnacknowledged = true
+            failAtLaunch("A display recovery that ran while DisplayMind was closed failed. " + failure)
+        }
+        if recovery.takeStaleUnsettledRestore() != nil {
+            status = Self.attention
+            failAtLaunch("The previous display layout was not restored. Open Display Settings to choose the layout you want.")
         }
         guard scheduling else { return }
         monitorToken = (monitor ?? .live).start { [weak self] change in self?.hardwareChanged(change) }
@@ -109,7 +116,7 @@ import ServiceManagement
         dirty = true
         debounce?.invalidate()
         debounce = Timer.scheduledTimer(withTimeInterval: coalesce, repeats: false) { [weak self] _ in
-            Task { @MainActor in guard let self else { return }; self.debounce = nil; await self.tick(); self.syncTimers() }
+            Task { @MainActor in guard let self else { return }; self.debounce = nil; self.syncTimers(); await self.tick(); self.syncTimers() }
         }
     }
     /// The 1 s ticker runs only while a countdown, recovery wait or settle window is open.
@@ -138,8 +145,22 @@ import ServiceManagement
     func fail(_ message: String) {
         if windowVisible() { error = message } else { menuError = message; notifier.post("DisplayMind", message) }
     }
+    /// Launch runs before any window exists: the message also goes to `error` so the window shows the alert when it opens.
+    private func failAtLaunch(_ message: String) {
+        error = message; menuError = message
+        notifier.post("DisplayMind", message)
+    }
     private func rearm() { gate.reset(); if scheduling { changed() } }
-    func dismissMenuError() { menuError = nil }
+    func dismissMenuError() { menuError = nil; dismissedFailure() }
+    func dismissError() { error = nil; dismissedFailure() }
+    /// The user has seen a recovery failure: only now is it acknowledged on disk.
+    private func dismissedFailure() {
+        guard recoveryUnacknowledged else { return }
+        recoveryUnacknowledged = false
+        recovery.acknowledge()
+        error = nil; menuError = nil
+        if status == Self.attention { status = "\(displays.count) display\(displays.count == 1 ? "" : "s") connected" }
+    }
     func allowAirPlayControl() {
         airPlay.requestAccess()
         airPlayAuthorized = airPlay.authorized()
@@ -169,7 +190,7 @@ import ServiceManagement
             let backend = self.backend
             let current = try await Task.detached { try backend.read() }.value
             displays = hardware.nameDisplays(current)
-            if pending == nil && !busy { status = "\(current.count) display\(current.count == 1 ? "" : "s") connected" }
+            if pending == nil && !busy && !recoveryUnacknowledged { status = "\(current.count) display\(current.count == 1 ? "" : "s") connected" }
         } catch { report(error) }
     }
     func capture() async {
@@ -335,8 +356,8 @@ import ServiceManagement
         if let pending { secondsRemaining = max(0, Int(ceil(pending.journal.deadline.timeIntervalSinceNow))) }
         if let id = recoveryID, let result = recovery.result(), result.id == id {
             recoveryID = nil; pending = nil; busy = false
-            status = result.error == nil ? "Previous layout restored" : "Display recovery needs attention"
-            if let failure = result.error { fail(failure); recovery.acknowledge() }
+            status = result.error == nil ? "Previous layout restored" : Self.attention
+            if let failure = result.error { recoveryUnacknowledged = true; fail(failure) }
             else if let failure = applyFailure { fail(failure + " The previous layout was restored.") }
             applyFailure = nil
             await refresh()

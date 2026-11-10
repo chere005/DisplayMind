@@ -53,8 +53,8 @@ struct MainView: View {
         .background(Color(nsColor: .windowBackgroundColor))
         .sheet(item: $store.editorPreset) { PresetEditor(store: store, original: $0) }
         .sheet(item: $store.editorRule) { RuleEditor(store: store, original: $0) }
-        .alert("DisplayMind", isPresented: Binding(get: { store.error != nil }, set: { if !$0 { store.error = nil } })) {
-            Button("OK", role: .cancel) { store.error = nil }
+        .alert("DisplayMind", isPresented: Binding(get: { store.error != nil }, set: { if !$0 { store.dismissError() } })) {
+            Button("OK", role: .cancel) { store.dismissError() }
         } message: { Text(store.error ?? "") }
         .alert("Delete \(deleting?.name ?? "preset")?", isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } })) {
             Button("Delete", role: .destructive) { if let deleting { store.delete(deleting) }; deleting = nil }

@@ -73,7 +73,7 @@ final class ArrangementTests: XCTestCase {
         var p = box("b", 0, 0, 500, 1000); p.rotation = 90
         let d = [box("a", -1000, -500), p]
         XCTAssertEqual(snap(d, "b", 20, -700), [0, -700], "right of a, spans -700..300, still touching a's -500..0")
-        XCTAssertEqual(snap(d, "b", 20, -700), snap(d, "b", 20, -700))
+        XCTAssertEqual(snap(d, "b", 20, -700), snap(Array(d.reversed()), "b", 20, -700), "array order does not change the result")
         XCTAssertEqual(snap(d, "b", -1200, -1700), [-1200, -1500], "above a")
     }
     func testSnapPassThroughCases() {

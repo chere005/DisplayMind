@@ -103,4 +103,57 @@ final class RecoveryTests: XCTestCase {
         XCTAssertTrue(try String(contentsOf: dir.appendingPathComponent("applied.txt")).contains("degree:90"))
         XCTAssertTrue(FileManager.default.fileExists(atPath: dir.appendingPathComponent("restoring-\(journal.id).json").path))
     }
+    // MARK: one restore at a time
+    func writeSnapshot(_ journal: RecoveryJournal) throws {
+        try JSONEncoder().encode(journal).write(to: dir.appendingPathComponent("restoring-\(journal.id).json"))
+    }
+    func appliedCount() -> Int { (try? String(contentsOf: dir.appendingPathComponent("applied.txt")).split(separator: "\n").count) ?? 0 }
+    func testResumeWaitsForALiveRestoreAndThenReportsItsResultInsteadOfRestoringAgain() throws {
+        var changed = layout(); changed[1].rotation = 270
+        let backend = try fakeBackend(current: changed, restored: layout())
+        let journal = RecoveryJournal(deadline: .distantPast, previous: layout())
+        try writeSnapshot(journal)
+        let watchdog = RecoveryController(directory: dir), app = RecoveryController(directory: dir)
+        let held = DispatchSemaphore(value: 0), release = DispatchSemaphore(value: 0), resumed = DispatchSemaphore(value: 0)
+        Thread.detachNewThread {
+            try? watchdog.withRestoreLock {
+                held.signal(); release.wait()
+                let result = RecoveryResult(id: journal.id, error: nil)   // the watchdog finishes: result written, snapshot removed
+                try? JSONEncoder().encode(result).write(to: watchdog.resultURL)
+                try? FileManager.default.removeItem(at: self.dir.appendingPathComponent("restoring-\(journal.id).json"))
+            }
+        }
+        held.wait()
+        Thread.detachNewThread { app.resume(journal, backend: backend, disconnectAirPlay: { _ in }); resumed.signal() }
+        XCTAssertEqual(resumed.wait(timeout: .now() + 0.5), .timedOut, "resume must block while the lock is held")
+        release.signal()
+        XCTAssertEqual(resumed.wait(timeout: .now() + 5), .success)
+        XCTAssertEqual(appliedCount(), 0, "the watchdog's result stands; no second restore")
+        XCTAssertEqual(app.result()?.id, journal.id)
+    }
+    func testResumeRestoresWhenNoOneElseHoldsTheLockAndWatchdogWaitsItsTurn() throws {
+        var changed = layout(); changed[1].rotation = 270
+        let backend = try fakeBackend(current: changed, restored: layout())
+        let journal = RecoveryJournal(deadline: .distantPast, previous: layout())
+        try writeSnapshot(journal)
+        RecoveryController(directory: dir).resume(journal, backend: backend, disconnectAirPlay: { _ in })
+        let once = appliedCount()
+        XCTAssertGreaterThan(once, 0)
+        XCTAssertNil(RecoveryController(directory: dir).result()?.error)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: dir.appendingPathComponent("restoring-\(journal.id).json").path))
+        RecoveryController(directory: dir).resume(journal, backend: backend, disconnectAirPlay: { _ in })
+        XCTAssertEqual(appliedCount(), once, "snapshot gone: a second resume does nothing")
+    }
+    func testWatchdogHoldsTheRestoreLockWhileRestoring() throws {
+        var changed = layout(); changed[1].rotation = 270
+        let backend = try fakeBackend(current: changed, restored: layout())
+        let journal = RecoveryJournal(deadline: .distantPast, previous: layout())
+        try writeJournal(journal)
+        let recovery = RecoveryController(directory: dir)
+        let held = DispatchSemaphore(value: 0)
+        Thread.detachNewThread { try? recovery.withRestoreLock { held.signal(); Thread.sleep(forTimeInterval: 0.4) } }
+        held.wait()
+        recovery.watch(backend: backend, disconnectAirPlay: { _ in })   // blocks until the other holder is done, then restores
+        XCTAssertGreaterThan(appliedCount(), 0); XCTAssertNil(recovery.result()?.error)
+    }
 }
