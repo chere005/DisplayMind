@@ -1,0 +1,85 @@
+#!/usr/bin/env python3
+"""Exercise the shipped watchdog in a disposable app with a fake display helper."""
+import json
+from pathlib import Path
+import shutil
+import subprocess
+import tempfile
+import time
+import uuid
+
+root = Path(__file__).resolve().parent.parent
+identifier = "00000000-0000-0000-0000-000000000001"
+
+
+def snapshot(rotation):
+    return f"""Persistent screen id: {identifier}
+Contextual screen id: 1
+Serial screen id: s100
+Type: MacBook built in screen
+Resolution: 1920x1080
+Hertz: 60
+Color Depth: 8
+Scaling: off
+Origin: (0,0) - main display
+Rotation: {rotation}
+Enabled: true
+Resolutions for rotation {rotation}:
+  mode 0: res:1920x1080 hz:60 color_depth:8 <-- current mode
+
+displayplacer "id:{identifier} res:1920x1080 hz:60 color_depth:8 enabled:true scaling:off origin:(0,0) degree:{rotation}"
+"""
+
+
+with tempfile.TemporaryDirectory(prefix="DisplayMind-watchdog-") as temporary:
+    directory = Path(temporary)
+    app = directory / "DisplayMind.app"
+    executable = app / "Contents/MacOS/DisplayMind"
+    executable.parent.mkdir(parents=True)
+    shutil.copy2(root / "dist/DisplayMind.app/Contents/MacOS/DisplayMind", executable)
+    shutil.copy2(root / "Resources/Info.plist", app / "Contents/Info.plist")
+    helper = executable.with_name("displayplacer")
+    helper.write_text('''#!/bin/sh
+set -eu
+cd "$(dirname "$0")"
+if [ "$1" = list ]; then cat current.txt; exit 0; fi
+printf '%s\\n' "$@" > applied.txt
+cp restored.txt current.txt
+''')
+    helper.chmod(0o700)
+    (helper.parent / "current.txt").write_text(snapshot(180))
+    (helper.parent / "restored.txt").write_text(snapshot(0))
+    state = directory / "state"
+    state.mkdir()
+    change_id = str(uuid.uuid4())
+    journal = {
+        "id": change_id,
+        "deadline": time.time() - 978307200 + 0.3,
+        "previous": [{"id": identifier, "name": "Test display", "mode": {
+            "width": 1920, "height": 1080, "hertz": 60, "depth": 8, "scaled": False
+        }, "rotation": 0, "x": 0, "y": 0, "enabled": True}]
+    }
+    pending = state / "pending-change.json"
+    pending.write_text(json.dumps(journal))
+    subprocess.run([str(executable), "--watchdog", str(state)], check=True, timeout=10)
+    result = json.loads((state / "recovery-result.json").read_text())
+    assert result["id"].lower() == change_id and result.get("error") is None, result
+    assert not pending.exists()
+    assert "degree:0" in (helper.parent / "applied.txt").read_text()
+
+    # A UI that confirms the layout removes the journal; the worker must exit without applying.
+    (helper.parent / "applied.txt").unlink()
+    journal["deadline"] = time.time() - 978307200 + 5
+    pending.write_text(json.dumps(journal))
+    worker = subprocess.Popen([str(executable), "--watchdog", str(state)])
+    try:
+        time.sleep(0.15)
+        pending.unlink()
+        assert worker.wait(timeout=5) == 0
+    finally:
+        if worker.poll() is None:
+            worker.kill()
+            worker.wait()
+    assert not (helper.parent / "applied.txt").exists()
+
+print("Independent watchdog smoke checks passed with a fake display helper.")

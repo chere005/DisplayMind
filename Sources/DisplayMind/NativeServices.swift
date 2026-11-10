@@ -1,0 +1,179 @@
+import AppKit
+import CoreGraphics
+import DisplayMindCore
+import IOKit
+import ServiceManagement
+
+enum ProcessRunner {
+    static func run(_ executable: URL, arguments: [String], timeout: TimeInterval = 30) throws -> String {
+        let process = Process()
+        process.executableURL = executable
+        process.arguments = arguments
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = pipe
+        try process.run()
+        let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.global(qos: .utility))
+        timer.schedule(deadline: .now() + timeout)
+        timer.setEventHandler { if process.isRunning { kill(process.processIdentifier, SIGKILL) } }
+        timer.resume()
+        defer { timer.cancel() }
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        let output = String(decoding: data, as: UTF8.self)
+        guard process.terminationStatus == 0 else {
+            throw DisplayMindError(output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ? "The display helper stopped or timed out. The previous layout will be restored."
+                : String(output.suffix(2000)))
+        }
+        return output
+    }
+}
+
+struct DisplayBackend {
+    let helper: URL
+    init(helper: URL = Bundle.main.executableURL!.deletingLastPathComponent().appendingPathComponent("displayplacer")) { self.helper = helper }
+    func read() throws -> [ConnectedDisplay] { try DisplayParser.parse(ProcessRunner.run(helper, arguments: ["list"])) }
+    func apply(_ displays: [DisplaySetting]) throws { _ = try ProcessRunner.run(helper, arguments: Configuration.arguments(for: displays)) }
+}
+
+enum Hardware {
+    static func devices() -> [Device] {
+        var result: [Device] = []
+        var displays = [CGDirectDisplayID](repeating: 0, count: 32)
+        var count: UInt32 = 0
+        if CGGetOnlineDisplayList(32, &displays, &count) == .success {
+            for display in displays.prefix(Int(count)) {
+                if let uuid = CGDisplayCreateUUIDFromDisplayID(display)?.takeRetainedValue() {
+                    let id = CFUUIDCreateString(nil, uuid)! as String
+                    result.append(Device(id: "display:\(id)", name: CGDisplayIsBuiltin(display) != 0 ? "Built-in display" : "External display", kind: .display))
+                }
+            }
+        }
+        var iterator: io_iterator_t = 0
+        if IOServiceGetMatchingServices(kIOMainPortDefault, IOServiceMatching("IOUSBHostDevice"), &iterator) == KERN_SUCCESS {
+            defer { IOObjectRelease(iterator) }
+            while case let service = IOIteratorNext(iterator), service != 0 {
+                defer { IOObjectRelease(service) }
+                var properties: Unmanaged<CFMutableDictionary>?
+                guard IORegistryEntryCreateCFProperties(service, &properties, kCFAllocatorDefault, 0) == KERN_SUCCESS,
+                      let values = properties?.takeRetainedValue() as? [String: Any],
+                      let vendor = values["idVendor"] as? NSNumber,
+                      let product = values["idProduct"] as? NSNumber else { continue }
+                let name = values["USB Product Name"] as? String ?? values["kUSBProductString"] as? String ?? "USB device"
+                let serial = (values["USB Serial Number"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+                let identity = serial.flatMap { $0.isEmpty ? nil : "serial:\($0)" } ?? "port:\((values["locationID"] as? NSNumber)?.uint32Value ?? 0)"
+                result.append(Device(id: "usb:\(vendor):\(product):\(identity)", name: name, kind: .usb))
+            }
+        }
+        return Array(Dictionary(result.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first }).values).sorted {
+            if $0.kind != $1.kind { return $0.kind == .display }
+            return $0.name == $1.name ? $0.id < $1.id : $0.name < $1.name
+        }
+    }
+
+    @MainActor static func nameDisplays(_ displays: [ConnectedDisplay]) -> [ConnectedDisplay] {
+        let names = Dictionary(NSScreen.screens.compactMap { screen -> (UInt32, String)? in
+            guard let id = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? UInt32 else { return nil }
+            return (id, screen.localizedName)
+        }, uniquingKeysWith: { a, _ in a })
+        return displays.map { display in
+            var copy = display
+            if let name = names[display.contextualID] { copy.setting.name = name }
+            return copy
+        }
+    }
+}
+
+/// An independent process owns the deadline. Closing or crashing the UI cannot cancel rollback.
+struct RecoveryController {
+    let directory: URL
+    var pendingURL: URL { directory.appendingPathComponent("pending-change.json") }
+    var resultURL: URL { directory.appendingPathComponent("recovery-result.json") }
+    func read() -> RecoveryJournal? { try? JSONDecoder().decode(RecoveryJournal.self, from: Data(contentsOf: pendingURL)) }
+    private func withLock<T>(_ body: () throws -> T) throws -> T {
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let fd = open(directory.appendingPathComponent("recovery.lock").path, O_CREAT | O_RDWR, 0o600)
+        guard fd >= 0 else { throw DisplayMindError("Could not open the display recovery lock.") }
+        defer { close(fd) }
+        guard flock(fd, LOCK_EX) == 0 else { throw DisplayMindError("Could not lock display recovery.") }
+        defer { flock(fd, LOCK_UN) }
+        return try body()
+    }
+    private func write(_ journal: RecoveryJournal) throws {
+        try JSONEncoder().encode(journal).write(to: pendingURL, options: .atomic)
+    }
+    func updateDeadline(id: UUID, deadline: Date) throws {
+        try withLock {
+            guard var journal = read(), journal.id == id, journal.deadline > Date() else {
+                throw DisplayMindError("The display change has already started reverting.")
+            }
+            journal.deadline = deadline
+            try write(journal)
+        }
+    }
+    func arm(previous: [DisplaySetting]) throws -> RecoveryJournal {
+        try Configuration.validate(previous)
+        let journal = RecoveryJournal(deadline: Date().addingTimeInterval(65), previous: previous)
+        try withLock {
+            guard !FileManager.default.fileExists(atPath: pendingURL.path) else { throw DisplayMindError("A display change is already awaiting confirmation.") }
+            try? FileManager.default.removeItem(at: resultURL)
+            try write(journal)
+        }
+        let process = Process()
+        process.executableURL = Bundle.main.executableURL
+        process.arguments = ["--watchdog", directory.path]
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        do { try process.run() } catch { try? FileManager.default.removeItem(at: pendingURL); throw error }
+        return journal
+    }
+    func keep(id: UUID) throws {
+        try withLock {
+            guard let journal = read(), journal.id == id, journal.deadline > Date() else { throw DisplayMindError("The confirmation period ended. Restoring the previous layout.") }
+            try FileManager.default.removeItem(at: pendingURL)
+        }
+    }
+    func requestRevert() throws {
+        try withLock {
+            guard var journal = read() else { return }
+            journal.deadline = .distantPast
+            try write(journal)
+        }
+    }
+    func result() -> RecoveryResult? { try? JSONDecoder().decode(RecoveryResult.self, from: Data(contentsOf: resultURL)) }
+
+    func watch(backend: DisplayBackend) {
+        while let journal = read() {
+            if journal.deadline > Date() { Thread.sleep(forTimeInterval: 0.25); continue }
+            let claimed = directory.appendingPathComponent("restoring-\(journal.id).json")
+            do {
+                try withLock {
+                    guard let current = read(), current.id == journal.id, current.deadline <= Date() else { throw DisplayMindError("Recovery was cancelled or extended.") }
+                    try FileManager.default.moveItem(at: pendingURL, to: claimed)
+                }
+            } catch { if read() != nil { continue }; return }
+            var failure: String?
+            do {
+                let actual = try backend.read()
+                let connected = Set(actual.map(\.id))
+                var previous = journal.previous.filter { connected.contains($0.id) }
+                guard !previous.isEmpty else { throw DisplayMindError("The previous displays are disconnected. Use macOS Display Settings to choose the available layout.") }
+                for i in previous.indices {
+                    if let parent = previous[i].mirrorOf, !connected.contains(parent) { previous[i].mirrorOf = nil }
+                }
+                if !previous.contains(where: { $0.enabled && $0.mirrorOf == nil && $0.x == 0 && $0.y == 0 }),
+                   let first = previous.first(where: { $0.enabled && $0.mirrorOf == nil }) {
+                    Configuration.makeMain(first.id, displays: &previous)
+                }
+                if !Configuration.matches(previous, actual: actual.map(\.setting)) { try backend.apply(previous) }
+                let restored = try backend.read()
+                guard Configuration.matches(previous, actual: restored.map(\.setting)) else { throw DisplayMindError("macOS did not restore every display setting. Open Display Settings to recover the layout.") }
+            } catch { failure = error.localizedDescription }
+            let result = RecoveryResult(id: journal.id, error: failure)
+            if let data = try? JSONEncoder().encode(result) { try? data.write(to: resultURL, options: .atomic) }
+            if failure == nil { try? FileManager.default.removeItem(at: claimed) }
+            return
+        }
+    }
+}
