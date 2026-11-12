@@ -38,6 +38,9 @@ with tempfile.TemporaryDirectory(prefix="DisplayMind-watchdog-") as temporary:
     executable.parent.mkdir(parents=True)
     shutil.copy2(root / "dist/DisplayMind.app/Contents/MacOS/DisplayMind", executable)
     shutil.copy2(root / "Resources/Info.plist", app / "Contents/Info.plist")
+    # The copy no longer matches the release signature (new bundle, changed contents); a hardened-runtime binary
+    # with a broken signature stalls in dyld until the system kills it, so give the copy its own ad hoc signature.
+    subprocess.run(["codesign", "--force", "--sign", "-", str(executable)], check=True, capture_output=True, timeout=60)
     helper = executable.with_name("displayplacer")
     helper.write_text('''#!/bin/sh
 set -eu
