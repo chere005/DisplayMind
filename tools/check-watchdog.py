@@ -31,27 +31,38 @@ displayplacer "id:{identifier} res:1920x1080 hz:60 color_depth:8 enabled:true sc
 """
 
 
+def verified(app):
+    """Never launch a copy whose signature does not verify: macOS would show a "damaged" alert."""
+    result = subprocess.run(["codesign", "--verify", "--deep", "--strict", str(app)], capture_output=True, text=True, timeout=60)
+    if result.returncode != 0:
+        raise SystemExit(f"Refusing to launch {app.name}: signature does not verify: {result.stderr.strip()}")
+    return app
+
+
 with tempfile.TemporaryDirectory(prefix="DisplayMind-watchdog-") as temporary:
     directory = Path(temporary)
     app = directory / "DisplayMind.app"
     executable = app / "Contents/MacOS/DisplayMind"
     executable.parent.mkdir(parents=True)
+    # Fixture and state files live outside the bundle: the bundle is signed once, below, and must never change after.
+    fixtures = directory / "fixtures"
+    fixtures.mkdir()
     shutil.copy2(root / "dist/DisplayMind.app/Contents/MacOS/DisplayMind", executable)
     shutil.copy2(root / "Resources/Info.plist", app / "Contents/Info.plist")
-    # The copy no longer matches the release signature (new bundle, changed contents); a hardened-runtime binary
-    # with a broken signature stalls in dyld until the system kills it, so give the copy its own ad hoc signature.
-    subprocess.run(["codesign", "--force", "--sign", "-", str(executable)], check=True, capture_output=True, timeout=60)
     helper = executable.with_name("displayplacer")
-    helper.write_text('''#!/bin/sh
+    helper.write_text(f'''#!/bin/sh
 set -eu
-cd "$(dirname "$0")"
+cd "{fixtures}"
 if [ "$1" = list ]; then cat current.txt; exit 0; fi
 printf '%s\\n' "$@" > applied.txt
 cp restored.txt current.txt
 ''')
     helper.chmod(0o700)
-    (helper.parent / "current.txt").write_text(snapshot(180))
-    (helper.parent / "restored.txt").write_text(snapshot(0))
+    (fixtures / "current.txt").write_text(snapshot(180))
+    (fixtures / "restored.txt").write_text(snapshot(0))
+    # The copy no longer matches the release signature (new bundle, changed contents); a hardened-runtime binary
+    # with a broken signature stalls in dyld, so sign the finished bundle once with its own ad hoc signature.
+    subprocess.run(["codesign", "--force", "--deep", "--sign", "-", str(app)], check=True, capture_output=True, timeout=60)
     state = directory / "state"
     state.mkdir()
     change_id = str(uuid.uuid4())
@@ -64,16 +75,18 @@ cp restored.txt current.txt
     }
     pending = state / "pending-change.json"
     pending.write_text(json.dumps(journal))
+    verified(app)
     subprocess.run([str(executable), "--watchdog", str(state)], check=True, timeout=10)
     result = json.loads((state / "recovery-result.json").read_text())
     assert result["id"].lower() == change_id and result.get("error") is None, result
     assert not pending.exists()
-    assert "degree:0" in (helper.parent / "applied.txt").read_text()
+    assert "degree:0" in (fixtures / "applied.txt").read_text()
 
     # A UI that confirms the layout removes the journal; the worker must exit without applying.
-    (helper.parent / "applied.txt").unlink()
+    (fixtures / "applied.txt").unlink()
     journal["deadline"] = time.time() - 978307200 + 5
     pending.write_text(json.dumps(journal))
+    verified(app)
     worker = subprocess.Popen([str(executable), "--watchdog", str(state)])
     try:
         time.sleep(0.15)
@@ -83,6 +96,6 @@ cp restored.txt current.txt
         if worker.poll() is None:
             worker.kill()
             worker.wait()
-    assert not (helper.parent / "applied.txt").exists()
+    assert not (fixtures / "applied.txt").exists()
 
 print("Independent watchdog smoke checks passed with a fake display helper.")
