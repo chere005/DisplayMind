@@ -1,49 +1,30 @@
 import AppKit
 
-// One geometry source for MindSuite's mint, joined DM in every vector and native asset.
+// DisplayMind's silver DM follows the MindSuite 96-unit, 9-unit rounded-stroke mark.
 let directory = URL(fileURLWithPath: CommandLine.arguments[1], isDirectory: true)
 let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
 let assets = root.appendingPathComponent("assets", isDirectory: true)
 try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
 try FileManager.default.createDirectory(at: assets, withIntermediateDirectories: true)
-let mint = NSColor(srgbRed: 52.0/255, green: 211.0/255, blue: 153.0/255, alpha: 1)
-enum Stroke {
-    case move(Int, Int), line(Int, Int), curve(Int, Int, Int, Int, Int, Int)
-    var svg: String {
-        switch self {
-        case let .move(x, y): return "M \(x) \(y)"
-        case let .line(x, y): return "L \(x) \(y)"
-        case let .curve(x, y, a, b, c, d): return "C \(a) \(b) \(c) \(d) \(x) \(y)"
-        }
-    }
-    func append(to path: NSBezierPath) {
-        func point(_ x: Int, _ y: Int) -> NSPoint { NSPoint(x: CGFloat(x), y: CGFloat(y)) }
-        switch self {
-        case let .move(x, y): path.move(to: point(x, y))
-        case let .line(x, y): path.line(to: point(x, y))
-        case let .curve(x, y, a, b, c, d): path.curve(to: point(x, y), controlPoint1: point(a, b), controlPoint2: point(c, d))
-        }
-    }
-}
-let strokes: [Stroke] = [
-    .move(27, 71), .curve(27, 25, 53, 71, 53, 25),
-    .line(16, 25), .line(16, 71), .line(27, 71), .line(58, 71),
-    .line(58, 45), .line(69, 58), .line(80, 45), .line(80, 71)
-]
-let pathData = strokes.map(\.svg).joined(separator: " ")
+let silver = NSColor(srgbRed: 192.0/255, green: 192.0/255, blue: 192.0/255, alpha: 1)
+let pathData = "M 14 26 L 14 70 L 24 70 C 50 70 50 26 24 26 L 14 26 M 54 70 L 54 26 L 68 52 L 82 26 L 82 70"
 for square in [false, true] {
     let svg = """
     <svg xmlns="http://www.w3.org/2000/svg" width="96" height="96" viewBox="0 0 96 96">
-      <!-- DisplayMind: one joined mint DM in the MindSuite rounded monogram style. -->
+      <!-- DisplayMind: silver DM in the MindSuite rounded monogram style. -->
       <rect width="96" height="96"\(square ? "" : " rx=\"20\"") fill="#111111"/>
-      <path d="\(pathData)" fill="none" stroke="#34d399" stroke-width="9" stroke-linecap="round" stroke-linejoin="round"/>
+      <path d="\(pathData)" fill="none" stroke="#c0c0c0" stroke-width="9" stroke-linecap="round" stroke-linejoin="round"/>
     </svg>
     """ + "\n"
     try svg.write(to: assets.appendingPathComponent(square ? "logo-square.svg" : "logo.svg"), atomically: true, encoding: .utf8)
 }
 func drawMark(color: NSColor) {
     let path = NSBezierPath()
-    for stroke in strokes { stroke.append(to: path) }
+    path.move(to: NSPoint(x: 14, y: 26)); path.line(to: NSPoint(x: 14, y: 70)); path.line(to: NSPoint(x: 24, y: 70))
+    path.curve(to: NSPoint(x: 24, y: 26), controlPoint1: NSPoint(x: 50, y: 70), controlPoint2: NSPoint(x: 50, y: 26))
+    path.line(to: NSPoint(x: 14, y: 26))
+    path.move(to: NSPoint(x: 54, y: 70)); path.line(to: NSPoint(x: 54, y: 26)); path.line(to: NSPoint(x: 68, y: 52))
+    path.line(to: NSPoint(x: 82, y: 26)); path.line(to: NSPoint(x: 82, y: 70))
     path.lineWidth = 9; path.lineCapStyle = .round; path.lineJoinStyle = .round
     color.setStroke(); path.stroke()
 }
@@ -54,7 +35,7 @@ func bitmap(pixels: Int) -> Data {
     let transform = NSAffineTransform(); transform.scale(by: CGFloat(pixels) / 96); transform.translateX(by: 0, yBy: 96); transform.scaleX(by: 1, yBy: -1); transform.concat()
     NSColor(srgbRed: 17.0/255, green: 17.0/255, blue: 17.0/255, alpha: 1).setFill()
     NSBezierPath(roundedRect: NSRect(x: 0, y: 0, width: 96, height: 96), xRadius: 20, yRadius: 20).fill()
-    drawMark(color: mint)
+    drawMark(color: silver)
     NSGraphicsContext.restoreGraphicsState()
     return bitmap.representation(using: .png, properties: [:])!
 }
