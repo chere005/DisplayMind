@@ -5,7 +5,6 @@
 # never quit or launched.
 set -eu
 cd "$(dirname "$0")/.."
-BUNDLE_ID=com.seancheren.DisplayMind
 REAL=0
 if [ $# -eq 0 ] || [ "$1" = /Applications ]; then REAL=1; fi
 DEST="${1:-/Applications}"
@@ -49,20 +48,21 @@ rm -rf "$STAGE"
 ditto dist/DisplayMind.app "$STAGE"
 codesign --verify --deep --strict "$STAGE"
 
-# Real install only: the Apple event may be refused (no Automation consent), so pgrep also counts.
+# Only the installed GUI is part of this update; previews, watchdogs, and command-line checks stay independent.
 is_running() {
-  [ "$(osascript -e "application id \"$BUNDLE_ID\" is running" 2>/dev/null || echo false)" = true ] || pgrep -x DisplayMind >/dev/null 2>&1
+  PIDS=$(python3 -I tools/app_processes.py "$TARGET") || die 'Could not inspect the installed DisplayMind process; leaving it untouched.'
+  [ -n "$PIDS" ]
 }
 
 if [ "$REAL" = 1 ] && [ -e "$TARGET" ]; then
   if is_running; then
     WAS_RUNNING=1
-    osascript -e "tell application id \"$BUNDLE_ID\" to quit" >/dev/null 2>&1 || pkill -TERM -x DisplayMind || true
+    python3 -I tools/app_processes.py "$TARGET" --terminate
     N=0
     while is_running; do
       N=$((N + 1))
       [ "$N" -le 20 ] || die 'DisplayMind did not quit within 10 seconds; leaving the installed copy untouched.'
-      [ "$N" -ne 6 ] || pkill -TERM -x DisplayMind || true   # the Apple event did not take effect within 3 s
+      [ "$N" -ne 6 ] || python3 -I tools/app_processes.py "$TARGET" --terminate
       sleep 0.5
     done
   fi

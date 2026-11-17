@@ -1,7 +1,7 @@
 import Foundation
 import DisplayMindCore
 
-extension Store {
+@MainActor extension Store {
     /// A current UUID always wins over an alias left by an earlier connection.
     var currentDisplayAliases: [String: String] { displayAliases.filter { !connectedIDs.contains($0.key) } }
 

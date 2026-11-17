@@ -19,7 +19,7 @@ import DisplayMindCore
     }
 
     @discardableResult func createPresetFolder(name: String) -> UUID? {
-        guard !busy, pending == nil, let name = presetFolderName(name) else { return nil }
+        guard canEditSavedSettings, let name = presetFolderName(name) else { return nil }
         let folder = PresetFolder(name: name)
         var updated = settings
         updated.presetFolders = (updated.presetFolders ?? []) + [folder]
@@ -27,7 +27,7 @@ import DisplayMindCore
     }
 
     @discardableResult func renamePresetFolder(id: UUID, to proposed: String) -> Bool {
-        guard !busy, pending == nil,
+        guard canEditSavedSettings,
               let index = settings.presetFolders?.firstIndex(where: { $0.id == id }),
               let name = presetFolderName(proposed, ignoring: id) else { return false }
         var updated = settings
@@ -36,14 +36,14 @@ import DisplayMindCore
     }
 
     @discardableResult func setPresetFolderCollapsed(id: UUID, collapsed: Bool) -> Bool {
-        guard !busy, pending == nil, let index = settings.presetFolders?.firstIndex(where: { $0.id == id }) else { return false }
+        guard canEditSavedSettings, let index = settings.presetFolders?.firstIndex(where: { $0.id == id }) else { return false }
         var updated = settings
         updated.presetFolders?[index].collapsed = collapsed
         return persist(updated)
     }
 
     @discardableResult func movePreset(id: UUID, to folderID: UUID?) -> Bool {
-        guard !busy, pending == nil, let index = settings.presets.firstIndex(where: { $0.id == id }),
+        guard canEditSavedSettings, let index = settings.presets.firstIndex(where: { $0.id == id }),
               folderID == nil || (settings.presetFolders ?? []).contains(where: { $0.id == folderID }) else { return false }
         var updated = settings
         updated.presets[index].folderID = folderID
@@ -56,7 +56,7 @@ import DisplayMindCore
 
     /// Removing a folder keeps its presets and connection rules, returning its contents to Ungrouped.
     @discardableResult func deletePresetFolder(id: UUID) -> Bool {
-        guard !busy, pending == nil, (settings.presetFolders ?? []).contains(where: { $0.id == id }) else { return false }
+        guard canEditSavedSettings, (settings.presetFolders ?? []).contains(where: { $0.id == id }) else { return false }
         var updated = settings
         updated.presetFolders?.removeAll { $0.id == id }
         for index in updated.presets.indices where updated.presets[index].folderID == id {

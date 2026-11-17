@@ -435,7 +435,10 @@ struct RecoveryController {
         try withLock {
             guard let journal = read() else {
                 // Gone already: kept by the watchdog when the revert window closed, unless a restore claimed it.
-                if result()?.id == id { throw DisplayMindError("The previous layout was restored before the change could be kept.") }
+                let claimed = directory.appendingPathComponent("restoring-\(id).json")
+                if FileManager.default.fileExists(atPath: claimed.path) || result()?.id == id {
+                    throw DisplayMindError("The display change is already reverting or has been restored.")
+                }
                 return
             }
             guard journal.id == id, journal.keepWhenDue == true || journal.deadline > Date() else {

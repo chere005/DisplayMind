@@ -40,7 +40,7 @@ struct SwitchRow: View {
         HStack(spacing: 8) {
             Text(title).lineLimit(1)
             Spacer(minLength: 8)
-            Toggle(title, isOn: isOn).labelsHidden().toggleStyle(.switch).controlSize(.small).tint(Branding.fill)
+            Toggle(title, isOn: isOn).labelsHidden().toggleStyle(.switch).controlSize(.small)
         }
     }
 }
@@ -49,8 +49,19 @@ struct Badge: View {
     let text: String
     let color: Color
     var body: some View {
-        Text(text).font(.caption).foregroundStyle(color).lineLimit(1)
+        Text(text).font(.caption).foregroundStyle(.primary).lineLimit(1)
             .padding(.horizontal, 8).padding(.vertical, 3).background(color.opacity(0.14), in: Capsule())
+    }
+}
+
+/// Warning colour belongs to the icon; body text keeps its contrast on cards and selected rows.
+struct StatusMessage: View {
+    let text: String
+    var symbol = "exclamationmark.triangle.fill"
+    var color: Color = .red
+    var body: some View {
+        Label { Text(text).foregroundStyle(.primary) } icon: { Image(systemName: symbol).foregroundStyle(color) }
+            .fixedSize(horizontal: false, vertical: true)
     }
 }
 
@@ -63,6 +74,7 @@ struct MainView: View {
     /// The preset whose name is being edited in place in the sidebar.
     @State private var renamingID: UUID?
     @State private var renameText: String
+    @State private var renameError: String?
     @FocusState private var renameFocused: Bool
     @FocusState private var focusedPresetID: UUID?
     @State private var monitorFilter: Set<String>
@@ -70,16 +82,17 @@ struct MainView: View {
     @State private var folderEditor: FolderEditor?
     @State private var deletingFolder: PresetFolder?
     @State private var newFolderScrollTarget: UUID?
-    private var locked: Bool { store.busy || store.pending != nil }
+    private var locked: Bool { !store.canEditSavedSettings }
     private struct FolderEditor: Identifiable {
         var id = UUID()
         var folder: PresetFolder?
     }
     /// `renaming` opens with that preset's name already being edited (previews).
-    init(store: Store, renaming: UUID? = nil, monitorFilter: Set<String> = [], monitorMatchMode: PresetOrganization.MatchMode = .all, folderEditing: Bool = false, newFolder: Bool = false) {
+    init(store: Store, renaming: UUID? = nil, renameText: String? = nil, renameError: String? = nil, monitorFilter: Set<String> = [], monitorMatchMode: PresetOrganization.MatchMode = .all, folderEditing: Bool = false, newFolder: Bool = false) {
         self.store = store
         _renamingID = State(initialValue: renaming)
-        _renameText = State(initialValue: store.settings.presets.first { $0.id == renaming }?.name ?? "")
+        _renameText = State(initialValue: renameText ?? store.settings.presets.first { $0.id == renaming }?.name ?? "")
+        _renameError = State(initialValue: renameError)
         _monitorFilter = State(initialValue: monitorFilter)
         _monitorMatchMode = State(initialValue: monitorMatchMode)
         _folderEditor = State(initialValue: folderEditing ? FolderEditor(folder: newFolder ? nil : store.settings.presetFolders?.first) : nil)
@@ -146,8 +159,8 @@ struct MainView: View {
             }
             Button("Cancel", role: .cancel) { deletingFolder = nil }
         } message: { Text("Its presets are kept and moved to Ungrouped. Connection rules are kept.") }
-        .onChange(of: monitorFilter) { _ in commitRename(); alignPresetSelection() }
-        .onChange(of: monitorMatchMode) { _ in commitRename(); alignPresetSelection() }
+        .onChange(of: monitorFilter) { _ in alignPresetSelection() }
+        .onChange(of: monitorMatchMode) { _ in alignPresetSelection() }
         .onAppear { alignPresetSelection() }
         .onChange(of: store.settings) { _ in normalizeMonitorFilter() }
         .onChange(of: monitorOptions.map(\.id)) { _ in normalizeMonitorFilter() }
@@ -164,7 +177,9 @@ struct MainView: View {
             HStack {
                 SectionLabel("Presets")
                 Spacer()
-                IconButton(symbol: "folder.badge.plus", help: "New preset folder") { folderEditor = FolderEditor() }
+                IconButton(symbol: "folder.badge.plus", help: "New preset folder") {
+                    if commitRename() { folderEditor = FolderEditor() }
+                }
                     .disabled(locked)
             }.padding(.leading, 20).padding(.trailing, 14).padding(.bottom, 4)
             VStack(alignment: .leading, spacing: 5) {
@@ -172,11 +187,14 @@ struct MainView: View {
                     Text("Includes displays").font(.caption).foregroundStyle(.secondary)
                     Spacer()
                     if !monitorFilter.isEmpty {
-                        Button("Clear") { monitorFilter = [] }.buttonStyle(.plain).font(.caption).foregroundStyle(Branding.text)
+                        Button("Clear") { clearMonitorFilter() }.buttonStyle(.plain).font(.caption).foregroundStyle(Branding.text)
                             .accessibilityLabel("Clear display filter")
                     }
                 }
-                PresetMonitorFilter(monitors: monitorOptions, selected: $monitorFilter, matching: $monitorMatchMode, matchCount: matchingPresets.count)
+                PresetMonitorFilter(monitors: monitorOptions,
+                                    selected: Binding(get: { monitorFilter }, set: { if commitRename() { monitorFilter = $0 } }),
+                                    matching: Binding(get: { monitorMatchMode }, set: { if commitRename() { monitorMatchMode = $0 } }),
+                                    matchCount: matchingPresets.count)
             }.padding(.horizontal, 16).padding(.bottom, 10)
             ScrollViewReader { proxy in
             ScrollView {
@@ -205,24 +223,32 @@ struct MainView: View {
                     } else if !monitorFilter.isEmpty && matchingPresets.isEmpty {
                         VStack(alignment: .leading, spacing: 8) {
                             Text(monitorFilter.count == 1 ? "No presets include this display." : "No presets match these displays.").foregroundStyle(.secondary)
-                            Button("Clear display filter") { monitorFilter = [] }.buttonStyle(.plain).foregroundStyle(Branding.text)
+                            Button("Clear display filter") { clearMonitorFilter() }.buttonStyle(.plain).foregroundStyle(Branding.text)
                         }.font(.callout).padding(.horizontal, 10).padding(.vertical, 8)
                     }
                 }.padding(.horizontal, 10)
             }
-            .onChange(of: renamingID) { id in if let id { proxy.scrollTo(id, anchor: .center) } }
+            .onChange(of: renamingID) { id in
+                if let id {
+                    DispatchQueue.main.async {
+                        guard renamingID == id else { return }
+                        proxy.scrollTo(id, anchor: .center)
+                        renameFocused = true
+                    }
+                }
+            }
             .onChange(of: focusedPresetID) { id in if let id { proxy.scrollTo(id, anchor: .center) } }
             .onChange(of: newFolderScrollTarget) { id in
                 if let id { DispatchQueue.main.async { proxy.scrollTo(id, anchor: .top) } }
             }
             .onChange(of: renameFocused) { focused in if !focused { commitRename() } }   // clicking elsewhere keeps the typed name
             }
-            Button { Task { await store.capture() } } label: {
+            Button { if commitRename() { Task { await store.capture() } } } label: {
                 Label("Capture current layout", systemImage: "plus.viewfinder").frame(maxWidth: .infinity)
             }.controlSize(.large).disabled(locked).padding(.horizontal, 14).padding(.vertical, 12)
                 .help("Save the layout your displays have right now as a new preset")
             Divider().padding(.horizontal, 16)
-            Button { store.showRules = true } label: {
+            Button { if commitRename() { store.showRules = true } } label: {
                 HStack(spacing: 10) {
                     Image(systemName: "bolt.horizontal").frame(width: 24).foregroundStyle(store.showRules ? Branding.text : Color.secondary)
                     Text("Connection rules").font(.system(size: 13, weight: .medium))
@@ -252,6 +278,9 @@ struct MainView: View {
     private var presetGroups: [PresetOrganization.Group] {
         PresetOrganization.groups(settings: store.settings, monitorIDs: monitorFilter, matching: monitorMatchMode)
     }
+    private func clearMonitorFilter() {
+        if commitRename() { monitorFilter = [] }
+    }
     private func normalizeMonitorFilter() {
         let available = Set(monitorOptions.map(\.id))
         monitorFilter = Set(monitorFilter.map { store.currentDisplayID($0) }).intersection(available)
@@ -269,6 +298,7 @@ struct MainView: View {
     }
     private func movePresetFocus(_ direction: MoveCommandDirection, from id: UUID) {
         guard direction == .up || direction == .down else { return }
+        guard commitRename(restoreFocus: true) else { return }
         let visible = PresetOrganization.visiblePresets(settings: store.settings, monitorIDs: monitorFilter, matching: monitorMatchMode)
         guard let current = visible.firstIndex(where: { $0.id == id }) else { return }
         let next = current + (direction == .up ? -1 : 1)
@@ -281,7 +311,7 @@ struct MainView: View {
         let containsSelection = !store.showRules && group.presets.contains(where: { $0.id == store.selectedPresetID })
         return HStack(spacing: 2) {
             Button {
-                commitRename()
+                guard commitRename() else { return }
                 if store.setPresetFolderCollapsed(id: folder.id, collapsed: !folder.collapsed) { alignPresetSelection() }
             } label: {
                 HStack(spacing: 6) {
@@ -312,39 +342,83 @@ struct MainView: View {
 
     private func beginRename(_ preset: Preset) {
         guard !locked else { return }
+        if renamingID == preset.id {
+            focusRename(preset.id)
+            return
+        }
+        guard commitRename() else { return }
+        if let folderID = preset.folderID,
+           let folder = store.settings.presetFolders?.first(where: { $0.id == folderID }), folder.collapsed {
+            guard store.setPresetFolderCollapsed(id: folderID, collapsed: false) else { return }
+        }
         renameText = preset.name
+        renameError = nil
         store.selectedPresetID = preset.id; store.showRules = false
         renamingID = preset.id
-        DispatchQueue.main.async { renameFocused = true }
     }
-    private func commitRename(restoreFocus: Bool = false) {
-        guard let id = renamingID else { return }
+    @discardableResult private func commitRename(restoreFocus: Bool = false) -> Bool {
+        guard let id = renamingID else { return true }
+        guard let preset = store.settings.presets.first(where: { $0.id == id }) else {
+            cancelRename()
+            return true
+        }
+        guard !renameText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            renameError = "Give this preset a name."
+            if restoreFocus { focusRename(id) }
+            return false
+        }
+        guard store.rename(preset, to: renameText) else {
+            renameError = store.error ?? "This preset could not be renamed."
+            store.dismissError()
+            if restoreFocus { focusRename(id) }
+            return false
+        }
+        renameError = nil
         renamingID = nil
-        if let preset = store.settings.presets.first(where: { $0.id == id }) { store.rename(preset, to: renameText) }
-        if restoreFocus { DispatchQueue.main.async { focusedPresetID = id } }
+        if restoreFocus { focusPreset(id) }
+        return true
     }
     private func cancelRename() {
         guard let id = renamingID else { return }
+        renameError = nil
         renamingID = nil
-        DispatchQueue.main.async { focusedPresetID = id }
+        focusPreset(id)
+    }
+    private func focusRename(_ id: UUID) {
+        DispatchQueue.main.async { if renamingID == id { renameFocused = true } }
+    }
+    private func focusPreset(_ id: UUID) {
+        DispatchQueue.main.async {
+            if renamingID == nil, store.settings.presets.contains(where: { $0.id == id }) { focusedPresetID = id }
+        }
     }
 
     /// The sidebar row while its name is edited: Return or a click elsewhere keeps the name, Escape discards it.
     private func renameRow(_ preset: Preset) -> some View {
-        HStack(spacing: 10) {
-            PresetThumbnail(displays: preset.displays, selected: true)
-            TextField("Preset name", text: $renameText).textFieldStyle(.roundedBorder).font(.system(size: 13, weight: .medium))
-                .focused($renameFocused)
-                .onSubmit { commitRename(restoreFocus: true) }
-                .onExitCommand { cancelRename() }
-                .accessibilityLabel("Preset name")
+        VStack(alignment: .leading, spacing: 5) {
+            HStack(spacing: 10) {
+                PresetThumbnail(displays: preset.displays, selected: true)
+                TextField("Preset name", text: $renameText).textFieldStyle(.roundedBorder).font(.system(size: 13, weight: .medium))
+                    .focused($renameFocused)
+                    .onSubmit { commitRename(restoreFocus: true) }
+                    .onExitCommand { cancelRename() }
+                    .onChange(of: renameText) { _ in renameError = nil }
+                    .accessibilityLabel("Preset name")
+                    .accessibilityHint(renameError ?? "Return saves the name. Escape cancels.")
+            }
+            if let renameError {
+                StatusMessage(text: renameError).font(.caption)
+            }
         }.padding(.horizontal, 10).padding(.vertical, 8)
             .background(Branding.selection, in: RoundedRectangle(cornerRadius: 8))
     }
 
     private func presetRow(_ preset: Preset) -> some View {
         let selected = !store.showRules && store.selectedPresetID == preset.id
-        return Button { store.selectedPresetID = preset.id; store.showRules = false; focusedPresetID = preset.id } label: {
+        return Button {
+            guard commitRename() else { return }
+            store.selectedPresetID = preset.id; store.showRules = false; focusedPresetID = preset.id
+        } label: {
             HStack(spacing: 10) {
                 PresetThumbnail(displays: preset.displays, selected: selected)
                 VStack(alignment: .leading, spacing: 2) {
@@ -363,8 +437,8 @@ struct MainView: View {
             .simultaneousGesture(TapGesture(count: 2).onEnded { beginRename(preset) })
             .accessibilityAction(named: "Rename") { beginRename(preset) }
             .contextMenu {
-                Button("Apply") { Task { await store.apply(preset) } }.disabled(locked || store.unavailable(preset) != nil)
-                Button("Edit preset…") { store.editorPreset = preset }.disabled(locked)
+                Button("Apply") { if commitRename() { Task { await store.apply(preset) } } }.disabled(locked || store.unavailable(preset) != nil)
+                Button("Edit preset…") { if commitRename() { store.editorPreset = preset } }.disabled(locked)
                 presetMenu(preset).disabled(locked)
             }
     }
@@ -396,7 +470,7 @@ struct MainView: View {
         } else if let preset = store.selectedPreset {
             // One line of status, most pressing first; it never competes with a second label for the width.
             if let reason = store.unavailable(preset) {
-                Label(reason + " to use this preset", systemImage: "exclamationmark.triangle.fill").foregroundStyle(.orange).help(reason + " to use this preset")
+                StatusMessage(text: reason + " to use this preset", color: .orange).help(reason + " to use this preset")
             } else if store.isActive(preset) {
                 Label(preset.confirmed ? "Active now" : "Active now · apply and keep it once to enable rules", systemImage: "checkmark.circle.fill").foregroundStyle(Branding.text)
             } else if !preset.confirmed {
@@ -411,9 +485,9 @@ struct MainView: View {
 
     private func presetActions(_ preset: Preset) -> some View {
         HStack(spacing: 8) {
-            Button { Task { await store.apply(preset) } } label: { Label("Apply preset", systemImage: "play.fill") }
+            Button { if commitRename() { Task { await store.apply(preset) } } } label: { Label("Apply preset", systemImage: "play.fill") }
                 .buttonStyle(.borderedProminent).tint(Branding.fill).disabled(locked || store.unavailable(preset) != nil)
-            Button("Edit preset…") { store.editorPreset = preset }.disabled(locked)
+            Button("Edit preset…") { if commitRename() { store.editorPreset = preset } }.disabled(locked)
             Menu { presetMenu(preset) } label: { Text("⋯").frame(width: 16) }
                 .menuStyle(.button).buttonStyle(.bordered).menuIndicator(.hidden).fixedSize()
                 .help("More actions").accessibilityLabel("More actions").disabled(locked)
@@ -422,9 +496,10 @@ struct MainView: View {
 
     @ViewBuilder private func presetMenu(_ preset: Preset) -> some View {
         Button("Rename") { beginRename(preset) }
-        Button("Duplicate…") { store.duplicate(preset) }
+        Button("Duplicate…") { if commitRename() { store.duplicate(preset) } }
         Menu("Move to folder") {
             Button {
+                guard commitRename() else { return }
                 if store.movePreset(id: preset.id, to: nil) { alignPresetSelection() }
             } label: {
                 if preset.folderID == nil { Label("Ungrouped", systemImage: "checkmark") } else { Text("Ungrouped") }
@@ -432,15 +507,16 @@ struct MainView: View {
             if !(store.settings.presetFolders ?? []).isEmpty { Divider() }
             ForEach(store.settings.presetFolders ?? []) { folder in
                 Button {
+                    guard commitRename() else { return }
                     if store.movePreset(id: preset.id, to: folder.id) { alignPresetSelection() }
                 } label: {
                     if preset.folderID == folder.id { Label(folder.name, systemImage: "checkmark") } else { Text(folder.name) }
                 }
             }
         }
-        Button("Create connection rule…") { store.editorRule = rule(for: preset) }
+        Button("Create connection rule…") { if commitRename() { store.editorRule = rule(for: preset) } }
         Divider()
-        Button("Delete preset…", role: .destructive) { deletingPreset = preset }
+        Button("Delete preset…", role: .destructive) { if commitRename() { deletingPreset = preset } }
     }
 
     // MARK: Status bar and countdown
@@ -505,12 +581,12 @@ struct MainView: View {
                         HStack(spacing: 12) {
                             Image(systemName: symbol(for: display)).font(.title3).foregroundStyle(.secondary).frame(width: 28)
                             VStack(alignment: .leading, spacing: 3) {
-                                Text(display.name).fontWeight(.medium).lineLimit(1).truncationMode(.middle)
+                                Text(display.name).fontWeight(.medium).lineLimit(1).truncationMode(.middle).help(display.name)
                                 Text(display.mirrorOf != nil ? "Follows its source" : display.mode.label + (display.rotation == 0 ? "" : " · rotated \(display.rotation)°"))
                                     .font(.caption).foregroundStyle(.secondary).lineLimit(1)
                             }
                             Spacer(minLength: 12)
-                            Text(role(display, in: preset.displays)).font(.callout).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+                            Text(role(display, in: preset.displays)).font(.callout).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle).help(role(display, in: preset.displays))
                         }.padding(.horizontal, 14).padding(.vertical, 11)
                         if display.id != preset.displays.last?.id { Divider().padding(.leading, 54) }
                     }
@@ -542,7 +618,7 @@ struct MainView: View {
             Text("Capture your current displays, then edit their rotation, resolution, position, mirroring and sound. Your presets are one click away in the menu bar.")
                 .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             Button { Task { await store.capture() } } label: { Label("Save my current layout", systemImage: "plus.viewfinder") }
-                .buttonStyle(.borderedProminent).tint(Branding.fill).controlSize(.large).disabled(store.busy || store.displays.isEmpty)
+                .buttonStyle(.borderedProminent).tint(Branding.fill).controlSize(.large).disabled(locked || store.displays.isEmpty)
         }
     }
 
@@ -554,7 +630,7 @@ struct MainView: View {
                 Text(monitorFilter.isEmpty ? "Choose a saved layout from the sidebar." : monitorFilter.count > 1 && monitorMatchMode == .all
                      ? "Choose fewer displays, switch to Any selected, or clear the display filter." : "Choose different displays or clear the display filter.")
                     .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                if !monitorFilter.isEmpty { Button("Clear display filter") { monitorFilter = [] } }
+                if !monitorFilter.isEmpty { Button("Clear display filter") { clearMonitorFilter() } }
             }.padding(22).frame(maxWidth: .infinity, alignment: .leading)
         }
     }
@@ -619,12 +695,13 @@ struct MainView: View {
             HStack(alignment: .top, spacing: 12) {
                 Text("\(index + 1)").font(.callout.monospacedDigit()).foregroundStyle(.secondary).frame(width: 16, alignment: .trailing).padding(.top, 1)
                 Toggle("Rule enabled", isOn: Binding(get: { rule.enabled }, set: { enabled in var copy = rule; copy.enabled = enabled; store.saveRule(copy) }))
-                    .labelsHidden().toggleStyle(.switch).controlSize(.small).tint(Branding.fill).help(rule.enabled ? "This rule is on" : "This rule is off")
+                    .labelsHidden().toggleStyle(.switch).controlSize(.small).help(rule.enabled ? "This rule is on" : "This rule is off")
+                    .accessibilityLabel("Enable \(rule.name)")
                 VStack(alignment: .leading, spacing: 6) {
                     Text(rule.name).fontWeight(.semibold).lineLimit(2).fixedSize(horizontal: false, vertical: true)
                     Text(ruleSummary(rule)).font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                     HStack(spacing: 8) {
-                        Label(preset?.name ?? "No preset", systemImage: "arrow.turn.down.right").font(.callout).lineLimit(1).truncationMode(.middle)
+                        Label(preset?.name ?? "No preset", systemImage: "arrow.turn.down.right").font(.callout).lineLimit(1).truncationMode(.middle).help(preset?.name ?? "No preset")
                         Badge(text: state.text, color: state.color)
                     }.padding(.top, 2)
                 }.opacity(rule.enabled ? 1 : 0.65)
@@ -643,6 +720,7 @@ struct MainView: View {
         ConnectionRule(name: "Use \(preset.name)", presetID: preset.id, requiredDevices: store.defaultRuleDevices(for: preset))
     }
     private func newRule() {
+        guard commitRename() else { return }
         guard let preset = store.selectedPreset ?? store.settings.presets.first else { return }
         store.editorRule = rule(for: preset)
     }
@@ -673,8 +751,7 @@ struct PresetFolderNameEditor: View {
             TextField("Folder name", text: $name).textFieldStyle(.roundedBorder).focused($focused)
                 .onSubmit { saveName() }.accessibilityLabel("Folder name")
             if let validationError {
-                Label(validationError, systemImage: "exclamationmark.triangle.fill")
-                    .font(.caption).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true)
+                StatusMessage(text: validationError).font(.caption)
             }
             HStack {
                 Spacer()
@@ -771,6 +848,7 @@ struct DisplayDiagram: View {
                             dragging = nil; translation = .zero
                         })
                         .accessibilityElement(children: .ignore)
+                        .help(display.name)
                         .accessibilityLabel("\(display.name), \(role(display, in: displays)), \(display.rotation) degrees")
                         .modifier(Selectable(isSelected: isSelected, action: select.map { choose in { choose(display.id) } }))
                 }

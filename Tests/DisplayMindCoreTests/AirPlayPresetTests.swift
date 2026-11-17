@@ -45,23 +45,28 @@ final class AirPlayPresetTests: XCTestCase {
         var backend = DisplayBackend(helper: executable); backend.settle = 0.01; return backend
     }
     func helperApplies() -> Int { (try? String(contentsOf: dir.appendingPathComponent("calls.txt")).split(separator: "\n").count) ?? 0 }
-    /// The fake Screen Mirroring: a press changes which displays exist, as the real one does.
-    func toggle(_ target: AirPlayDestination, _ connecting: Bool) {
-        world.read { $0.calls.append((connecting ? "connect " : "disconnect ") + target.receiverName) }
-        set(casting: connecting)
-    }
     @MainActor func makeStore(presets: [Preset]) throws -> Store {
         var settings = AppSettings(); settings.presets = presets
         try SettingsFile(directory: data).save(settings)
         let world = self.world, backend = try backend()
+        let output = dir.appendingPathComponent("current.txt"), receiver = self.receiver
+        let solo = try fixture([laptop]), casted = try fixture([laptop, television])
+        let toggle: @Sendable (AirPlayDestination, Bool) -> Void = { target, connecting in
+            world.read {
+                $0.calls.append((connecting ? "connect " : "disconnect ") + target.receiverName)
+                try? (connecting ? casted : solo).write(to: output, atomically: true, encoding: .utf8)
+                $0.cast = connecting ? [displayB: receiver] : [:]
+                $0.online = connecting ? [displayA, displayB] : [displayA]
+            }
+        }
         let hardware = HardwareProvider(devices: { [] }, connectedDisplayIDs: { world.read { $0.online } }, nameDisplays: { $0 }, airPlayDisplays: { world.read { $0.cast } })
         let airPlay = AirPlayActions(authorized: { true }, requireAccess: {}, requestAccess: {}, receivers: { [] },
-                                     setConnected: { target, connecting, before in try before(); self.toggle(target, connecting) })
+                                     setConnected: { target, connecting, before in try before(); toggle(target, connecting) })
         return Store(directory: data, backend: backend, hardware: hardware, airPlay: airPlay, audio: .demo, notifier: .none,
                      launchWatchdog: { directory in
                          Thread.detachNewThread {
-                             RecoveryController(directory: directory).watch(backend: backend, disconnectAirPlay: { self.toggle($0, false) },
-                                                                            connectAirPlay: { self.toggle($0, true) }, audio: .demo)
+                             RecoveryController(directory: directory).watch(backend: backend, disconnectAirPlay: { toggle($0, false) },
+                                                                            connectAirPlay: { toggle($0, true) }, audio: .demo)
                          }
                      }, windowVisible: { false }, background: false)
     }

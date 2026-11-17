@@ -63,6 +63,8 @@ import ServiceManagement
     private var layoutStale = false
     /// Session aliases let an editor opened before a reconnect save against the current display IDs.
     var displayAliases: [String: String] = [:]
+    /// A newer read or display operation supersedes refreshes that are still waiting on the helper.
+    private var displayReadGeneration = 0
     private var polling = false
     private var writable = true
     private var applyFailure: String?
@@ -163,6 +165,8 @@ import ServiceManagement
 
     var connectedIDs: Set<String> { Set(displays.map(\.id)) }
     var identityUpdatesAllowed: Bool { writable && pending == nil && recoveryID == nil }
+    /// Editors and commands share the same lock while a display change is applying, reverting, or awaiting Keep.
+    var canEditSavedSettings: Bool { writable && !busy && pending == nil && recoveryID == nil }
     var selectedPreset: Preset? { settings.presets.first { $0.id == selectedPresetID } }
     var knownDevices: [Device] {
         let stored = settings.rules.flatMap { $0.requiredDevices + $0.absentDevices }
@@ -268,19 +272,27 @@ import ServiceManagement
         catch { report(error); return false }
     }
     func refresh() async {
+        guard !busy, pending == nil, recoveryID == nil else { return }
+        displayReadGeneration += 1
+        let generation = displayReadGeneration
         do {
             let backend = self.backend
             let current = try await Task.detached { try backend.read() }.value
+            guard generation == displayReadGeneration else { return }
             displays = hardware.nameDisplays(current)
             airPlayOnline = hardware.airPlayDisplays()
             reconcileDisplayIdentities()
             adoptDisplayNames()
             adoptAirPlay()
             if pending == nil && !busy && !recoveryUnacknowledged { status = idleStatus }
-        } catch { report(error) }
+        } catch {
+            guard generation == displayReadGeneration else { return }
+            report(error)
+        }
     }
     func capture() async {
-        guard !busy, pending == nil else { return }
+        guard canEditSavedSettings, !airPlayScanning, editorPreset == nil, editorRule == nil else { return }
+        displayReadGeneration += 1
         busy = true
         defer { busy = false }
         do {
@@ -295,6 +307,7 @@ import ServiceManagement
         } catch { report(error) }
     }
     func save(_ requested: Preset) {
+        guard canEditSavedSettings else { return }
         var preset = currentPresetReferences(requested)
         do { try Configuration.validate(preset) } catch { report(error); return }
         if let target = preset.airPlay, displays.contains(where: { $0.id == target.displayID && $0.builtIn }) {
@@ -319,6 +332,7 @@ import ServiceManagement
     }
     /// A new name never touches the layout, so the preset keeps its confirmation and its rules.
     @discardableResult func rename(_ preset: Preset, to name: String) -> Bool {
+        guard canEditSavedSettings else { return false }
         let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty, let i = settings.presets.firstIndex(where: { $0.id == preset.id }) else { return false }
         guard settings.presets[i].name != name else { return true }
@@ -373,18 +387,25 @@ import ServiceManagement
         if updated != settings { _ = persist(updated) }
     }
     func duplicate(_ preset: Preset) {
+        guard canEditSavedSettings else { return }
         var copy = currentPresetReferences(preset); copy.id = UUID(); copy.name += " copy"
         editorPreset = copy
     }
     func delete(_ preset: Preset) {
+        guard canEditSavedSettings else { return }
         var updated = settings
         updated.presets.removeAll { $0.id == preset.id }
         updated.rules.removeAll { $0.presetID == preset.id }
-        if persist(updated) { selectedPresetID = settings.presets.first?.id; rearm() }
+        if persist(updated) {
+            if selectedPresetID == preset.id { selectedPresetID = settings.presets.first?.id }
+            rearm()
+        }
     }
     func saveRule(_ requested: ConnectionRule) {
-        let rule = DisplayReconciliation.remap(rule: requested, using: currentDisplayAliases)
-        guard !rule.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+        guard canEditSavedSettings else { return }
+        var rule = DisplayReconciliation.remap(rule: requested, using: currentDisplayAliases)
+        rule.name = rule.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !rule.name.isEmpty,
               !rule.requiredDevices.isEmpty || !rule.absentDevices.isEmpty,
               settings.presets.contains(where: { $0.id == rule.presetID }) else { fail("Choose a preset, a name, and at least one connection condition."); return }
         var updated = settings
@@ -392,10 +413,12 @@ import ServiceManagement
         if persist(updated) { editorRule = nil; rearm() }
     }
     func deleteRule(_ rule: ConnectionRule) {
+        guard canEditSavedSettings else { return }
         var updated = settings; updated.rules.removeAll { $0.id == rule.id }
         if persist(updated) { rearm() }
     }
     func moveRule(_ rule: ConnectionRule, by offset: Int) {
+        guard canEditSavedSettings else { return }
         guard let i = settings.rules.firstIndex(where: { $0.id == rule.id }), settings.rules.indices.contains(i + offset) else { return }
         var updated = settings; updated.rules.swapAt(i, i + offset)
         if persist(updated) { rearm() }
@@ -414,6 +437,7 @@ import ServiceManagement
 
     func apply(_ requested: Preset, automatic: Bool = false) async {
         guard !busy, !airPlayScanning, pending == nil else { return }
+        displayReadGeneration += 1
         var preset = currentPresetReferences(requested)
         busy = true
         applyFailure = nil

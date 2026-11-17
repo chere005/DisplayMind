@@ -10,6 +10,7 @@ plutil -lint Resources/Info.plist
 test "$(cat VERSION)" = "$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' Resources/Info.plist)"
 dist/DisplayMind.app/Contents/MacOS/DisplayMind --diagnostics
 python3 tools/check-watchdog.py
+python3 tools/check-install-processes.py
 git diff --check
 git diff --cached --check
 if git rev-parse --verify HEAD >/dev/null 2>&1; then git show --format= --check HEAD; fi

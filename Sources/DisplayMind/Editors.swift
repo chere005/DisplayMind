@@ -1,7 +1,25 @@
 import SwiftUI
 import DisplayMindCore
 
-/// The arrangement on the left, everything about the chosen display and the preset on the right: nothing sits below a fold.
+/// Editor choices resolve a stale draft's UUID without changing the draft's layout.
+enum PresetEditorDisplays {
+    static func connected(_ display: DisplaySetting, among connected: [ConnectedDisplay], aliases: [String: String]) -> ConnectedDisplay? {
+        let id = DisplayReconciliation.resolvedID(display.id, using: aliases)
+        return connected.first { $0.id == id }
+    }
+
+    static func modes(for display: DisplaySetting, connected: [ConnectedDisplay], aliases: [String: String]) -> [DisplayMode] {
+        guard let current = self.connected(display, among: connected, aliases: aliases) else { return [display.mode] }
+        let modes = current.modes.map { mode -> DisplayMode in
+            var copy = mode
+            if current.setting.rotation % 180 != display.rotation % 180 { copy.width = mode.height; copy.height = mode.width }
+            return copy
+        }
+        return Array(Set(modes + [display.mode])).sorted(by: DisplayMode.pickerOrder)
+    }
+}
+
+/// The arrangement and scrollable inspector share the space above an always-visible action row.
 struct PresetEditor: View {
     @ObservedObject var store: Store
     let original: Preset
@@ -10,9 +28,11 @@ struct PresetEditor: View {
     @State private var validation: String?
     @State private var outputs: [AudioDevice]
     @State private var inputs: [AudioDevice]
+    private let height: CGFloat
     /// `selected` and `validate` open the editor on a given display or with its arrangement message showing (previews).
-    init(store: Store, original: Preset, selected: String? = nil, validate: Bool = false) {
+    init(store: Store, original: Preset, selected: String? = nil, validate: Bool = false, height: CGFloat = 660) {
         self.store = store; self.original = original
+        self.height = min(740, max(560, height))
         _outputs = State(initialValue: store.audio.outputs()); _inputs = State(initialValue: store.audio.inputs())
         _draft = State(initialValue: original)
         _selectedID = State(initialValue: selected ?? original.displays.first?.id ?? "")
@@ -29,6 +49,7 @@ struct PresetEditor: View {
             HStack(spacing: 16) {
                 Text(isNew ? "New preset" : "Edit preset").font(.title2).fontWeight(.semibold).fixedSize()
                 TextField("Preset name", text: $draft.name).textFieldStyle(.roundedBorder).controlSize(.large)
+                    .accessibilityLabel("Preset name")
             }.padding(.horizontal, 24).padding(.top, 22).padding(.bottom, 18)
             Divider()
             HStack(alignment: .top, spacing: 0) {
@@ -42,9 +63,9 @@ struct PresetEditor: View {
                 Spacer(minLength: 12)
                 Button("Cancel") { store.editorPreset = nil }.keyboardShortcut(.cancelAction)
                 Button("Save preset") { save() }.buttonStyle(.borderedProminent).tint(Branding.fill).keyboardShortcut(.defaultAction)
-                    .disabled(draft.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .disabled(!store.canEditSavedSettings || draft.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }.controlSize(.large).padding(.horizontal, 24).padding(.vertical, 14)
-        }.frame(width: 980, height: 740).background(Color(nsColor: .windowBackgroundColor))
+        }.frame(width: 980, height: height).background(Color(nsColor: .windowBackgroundColor))
             .alert("DisplayMind", isPresented: Binding(get: { store.error != nil }, set: { if !$0 { store.dismissError() } })) {
                 Button("OK", role: .cancel) { store.dismissError() }
             } message: { Text(store.error ?? "") }
@@ -84,13 +105,14 @@ struct PresetEditor: View {
                                         .overlay(Capsule().strokeBorder(selectedID == display.id ? Branding.text : Branding.hairline))
                                         .contentShape(Capsule())
                                 }.buttonStyle(.plain).help("Edit \(display.name)")
+                                    .accessibilityAddTraits(selectedID == display.id ? .isSelected : [])
                             }
                         }
                     }
                 }
             }
             if let validation {
-                Label(validation, systemImage: "exclamationmark.triangle.fill").font(.callout).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true)
+                StatusMessage(text: validation).font(.callout)
             } else {
                 Text("Click a display to edit it. Drag an extended display to move it; it snaps to the nearest edge. The main display stays at (0, 0).")
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
@@ -163,7 +185,9 @@ struct PresetEditor: View {
                 }
                 GridRow {
                     label("Resolution")
-                    PopUp(label: "Resolution", options: availableModes(for: display).map { ($0, $0.label) }, selection: $draft.displays[index].mode).frame(width: fieldWidth)
+                    PopUp(label: "Resolution", options: availableModes(for: display).map { ($0, $0.label) }, selection: Binding(get: { draft.displays[index].mode }, set: {
+                        draft.displays[index].mode = $0; validation = nil
+                    })).frame(width: fieldWidth)
                 }
                 GridRow {
                     label("Position")
@@ -171,9 +195,11 @@ struct PresetEditor: View {
                         Text("X").foregroundStyle(.secondary)
                         TextField("X", value: Binding(get: { draft.displays[index].x }, set: { draft.displays[index].x = min(100_000, max(-100_000, $0)); validation = nil }), format: .number.grouping(.never))
                             .frame(width: 72).multilineTextAlignment(.trailing)
+                            .accessibilityLabel("Horizontal position")
                         Text("Y").foregroundStyle(.secondary).padding(.leading, 6)
                         TextField("Y", value: Binding(get: { draft.displays[index].y }, set: { draft.displays[index].y = min(100_000, max(-100_000, $0)); validation = nil }), format: .number.grouping(.never))
                             .frame(width: 72).multilineTextAlignment(.trailing)
+                            .accessibilityLabel("Vertical position")
                     }.textFieldStyle(.roundedBorder).disabled(isMain)
                 }
                 if !isMain {
@@ -201,20 +227,17 @@ struct PresetEditor: View {
                 }
             }
         }
-        if let connected = store.displays.first(where: { $0.id == display.id }), display.mirrorOf == nil, connected.setting.rotation != display.rotation {
+        if let connected = connectedDisplay(for: display), display.mirrorOf == nil, connected.setting.rotation != display.rotation {
             note("Resolutions are listed for the display’s current orientation. If macOS rejects a rotated one, the previous layout is restored.")
         }
         if !display.enabled { note("This display was disabled in the captured layout and stays disabled.") }
     }
     private func place(_ index: Int, x: Int, y: Int) { draft.displays[index].x = x; draft.displays[index].y = y; validation = nil }
+    private func connectedDisplay(for display: DisplaySetting) -> ConnectedDisplay? {
+        PresetEditorDisplays.connected(display, among: store.displays, aliases: store.currentDisplayAliases)
+    }
     private func availableModes(for display: DisplaySetting) -> [DisplayMode] {
-        guard let connected = store.displays.first(where: { $0.id == display.id }) else { return [display.mode] }
-        let modes = connected.modes.map { mode -> DisplayMode in
-            var copy = mode
-            if connected.setting.rotation % 180 != display.rotation % 180 { copy.width = mode.height; copy.height = mode.width }
-            return copy
-        }
-        return Array(Set(modes + [display.mode])).sorted(by: DisplayMode.pickerOrder)
+        PresetEditorDisplays.modes(for: display, connected: store.displays, aliases: store.currentDisplayAliases)
     }
 
     // MARK: Sound
@@ -251,8 +274,8 @@ struct PresetEditor: View {
 
     /// Displays that can be the receiver's: the ones macOS reports as AirPlay first, then any other that is not built in.
     private var airPlayDisplays: [DisplaySetting] {
-        let candidates = draft.displays.filter { display in display.enabled && !store.displays.contains(where: { $0.id == display.id && $0.builtIn }) }
-        return candidates.filter { store.airPlayOnline[$0.id] != nil } + candidates.filter { store.airPlayOnline[$0.id] == nil }
+        let candidates = draft.displays.filter { $0.enabled && connectedDisplay(for: $0)?.builtIn != true }
+        return candidates.filter { store.airPlayOnline[store.currentDisplayID($0.id)] != nil } + candidates.filter { store.airPlayOnline[store.currentDisplayID($0.id)] == nil }
     }
     private var airPlayControls: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -275,6 +298,7 @@ struct PresetEditor: View {
                         TextField("Name in Screen Mirroring", text: Binding(get: { draft.airPlay?.receiverName ?? "" }, set: {
                             draft.airPlay?.receiverName = $0; draft.airPlay?.controlIdentifier = nil
                         })).textFieldStyle(.roundedBorder).frame(width: fieldWidth)
+                            .accessibilityLabel("AirPlay receiver name")
                     }
                     GridRow {
                         Color.clear.frame(width: labelWidth, height: 1)
@@ -316,6 +340,38 @@ struct PresetEditor: View {
     }
 }
 
+/// Draft-only conditions stay visible after a disconnect and follow a display's current identity.
+enum RuleEditorDevices {
+    static func resolved(_ device: Device, aliases: [String: String]) -> Device {
+        guard device.kind == .display, device.id.hasPrefix("display:") else { return device }
+        var result = device
+        result.id = "display:" + DisplayReconciliation.resolvedID(String(device.id.dropFirst("display:".count)), using: aliases)
+        return result
+    }
+
+    static func choices(draft: ConnectionRule, known: [Device], aliases: [String: String]) -> [Device] {
+        let all = (draft.requiredDevices + draft.absentDevices + known).map { resolved($0, aliases: aliases) }
+        return Dictionary(all.map { ($0.id, $0) }, uniquingKeysWith: { _, current in current }).values.sorted {
+            ($0.kind == .display ? 0 : 1, $0.name.lowercased(), $0.id) < ($1.kind == .display ? 0 : 1, $1.name.lowercased(), $1.id)
+        }
+    }
+
+    static func condition(_ device: Device, in draft: ConnectionRule, aliases: [String: String]) -> Int {
+        let id = resolved(device, aliases: aliases).id
+        if draft.requiredDevices.contains(where: { resolved($0, aliases: aliases).id == id }) { return 1 }
+        return draft.absentDevices.contains(where: { resolved($0, aliases: aliases).id == id }) ? 2 : 0
+    }
+
+    static func setCondition(_ condition: Int, for device: Device, in draft: inout ConnectionRule, aliases: [String: String]) {
+        draft = DisplayReconciliation.remap(rule: draft, using: aliases)
+        let device = resolved(device, aliases: aliases)
+        draft.requiredDevices.removeAll { $0.id == device.id }
+        draft.absentDevices.removeAll { $0.id == device.id }
+        if condition == 1 { draft.requiredDevices.append(device) }
+        else if condition == 2 { draft.absentDevices.append(device) }
+    }
+}
+
 struct RuleEditor: View {
     @ObservedObject var store: Store
     let original: ConnectionRule
@@ -325,13 +381,14 @@ struct RuleEditor: View {
     private var preset: Preset? { store.settings.presets.first { $0.id == draft.presetID } }
     /// Displays first, then USB devices, each by name.
     private var devices: [Device] {
-        store.knownDevices.sorted { ($0.kind == .display ? 0 : 1, $0.name.lowercased(), $0.id) < ($1.kind == .display ? 0 : 1, $1.name.lowercased(), $1.id) }
+        RuleEditorDevices.choices(draft: draft, known: store.knownDevices, aliases: store.currentDisplayAliases)
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 16) {
                 Text(isNew ? "New rule" : "Edit rule").font(.title2).fontWeight(.semibold).fixedSize()
                 TextField("Rule name", text: $draft.name).textFieldStyle(.roundedBorder).controlSize(.large)
+                    .accessibilityLabel("Rule name")
             }.padding(.horizontal, 24).padding(.top, 22).padding(.bottom, 18)
             Divider()
             VStack(alignment: .leading, spacing: 16) {
@@ -342,7 +399,7 @@ struct RuleEditor: View {
                     Spacer(minLength: 0)
                 }
                 if let preset, !preset.confirmed {
-                    Label("Apply and keep this preset once before the rule can run.", systemImage: "info.circle").font(.callout).foregroundStyle(.orange)
+                    StatusMessage(text: "Apply and keep this preset once before the rule can run.", symbol: "info.circle", color: .orange).font(.callout)
                 }
                 if let target = preset?.airPlay {
                     Text("This preset connects \(target.receiverName) itself. Use a dock or another display as the trigger: requiring the AirPlay display to be connected would wait for you to connect it by hand.")
@@ -379,20 +436,22 @@ struct RuleEditor: View {
             }.padding(.horizontal, 24).padding(.vertical, 18)
             Divider()
             HStack(spacing: 10) {
-                Toggle("Rule is on", isOn: $draft.enabled).toggleStyle(.switch).controlSize(.small).tint(Branding.fill)
+                Toggle("Rule is on", isOn: $draft.enabled).toggleStyle(.switch).controlSize(.small)
                 Spacer(minLength: 12)
                 Button("Cancel") { store.editorRule = nil }.keyboardShortcut(.cancelAction)
                 Button("Save rule") { store.saveRule(draft) }.buttonStyle(.borderedProminent).tint(Branding.fill).keyboardShortcut(.defaultAction)
-                    .disabled(draft.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || (draft.requiredDevices.isEmpty && draft.absentDevices.isEmpty))
+                    .disabled(!store.canEditSavedSettings || draft.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || (draft.requiredDevices.isEmpty && draft.absentDevices.isEmpty))
                     .help(draft.requiredDevices.isEmpty && draft.absentDevices.isEmpty ? "Mark at least one device Connected or Absent" : "")
             }.controlSize(.large).padding(.horizontal, 24).padding(.vertical, 14)
         }.frame(width: 660).background(Color(nsColor: .windowBackgroundColor))
+            .alert("DisplayMind", isPresented: Binding(get: { store.error != nil }, set: { if !$0 { store.dismissError() } })) {
+                Button("OK", role: .cancel) { store.dismissError() }
+            } message: { Text(store.error ?? "") }
     }
     private func condition(_ device: Device) -> Int {
-        draft.requiredDevices.contains { $0.id == device.id } ? 1 : draft.absentDevices.contains { $0.id == device.id } ? 2 : 0
+        RuleEditorDevices.condition(device, in: draft, aliases: store.currentDisplayAliases)
     }
     private func setCondition(_ device: Device, _ condition: Int) {
-        draft.requiredDevices.removeAll { $0.id == device.id }; draft.absentDevices.removeAll { $0.id == device.id }
-        if condition == 1 { draft.requiredDevices.append(device) }; if condition == 2 { draft.absentDevices.append(device) }
+        RuleEditorDevices.setCondition(condition, for: device, in: &draft, aliases: store.currentDisplayAliases)
     }
 }

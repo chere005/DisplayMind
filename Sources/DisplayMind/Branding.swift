@@ -5,7 +5,7 @@ enum Branding {
     private static func dynamic(light: NSColor, dark: NSColor) -> Color {
         Color(nsColor: NSColor(name: nil) { $0.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? dark : light })
     }
-    /// Fills: the primary button, switches, the main display tile. White text stays legible on it in both appearances.
+    /// Primary actions and main display thumbnails; white text and details stay legible in both appearances.
     static let fill = Color(red: 0.13, green: 0.52, blue: 0.63)
     /// Text and icons in the brand colour: darker on a light window, brighter on a dark one.
     static let text = dynamic(light: NSColor(srgbRed: 0.09, green: 0.42, blue: 0.52, alpha: 1), dark: NSColor(srgbRed: 0.42, green: 0.80, blue: 0.90, alpha: 1))

@@ -174,6 +174,27 @@ final class PresetOrganizationTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: blocked), Data("fixture".utf8))
     }
 
+    @MainActor func testFolderActionsCannotChangeSavedSettingsDuringApplyOrRevertWindow() throws {
+        let dir = try directory(); defer { try? FileManager.default.removeItem(at: dir) }
+        let store = Store(directory: dir, demo: true, background: false)
+        let folderID = try XCTUnwrap(store.createPresetFolder(name: "Desk"))
+        let saved = store.settings
+        let preset = try XCTUnwrap(saved.presets.first)
+        let bytes = try Data(contentsOf: store.settingsFile.url)
+        for isPending in [false, true] {
+            store.busy = !isPending
+            store.pending = isPending ? Store.PendingChange(journal: RecoveryJournal(deadline: Date().addingTimeInterval(60), previous: preset.displays), preset: preset) : nil
+            XCTAssertFalse(store.canEditSavedSettings)
+            XCTAssertNil(store.createPresetFolder(name: "Another"))
+            XCTAssertFalse(store.renamePresetFolder(id: folderID, to: "Changed"))
+            XCTAssertFalse(store.setPresetFolderCollapsed(id: folderID, collapsed: true))
+            XCTAssertFalse(store.movePreset(id: preset.id, to: folderID))
+            XCTAssertFalse(store.deletePresetFolder(id: folderID))
+            XCTAssertEqual(store.settings, saved)
+            XCTAssertEqual(try Data(contentsOf: store.settingsFile.url), bytes)
+        }
+    }
+
     func testThumbnailPreservesPortraitAndLandscapeProportionsAtOneScale() throws {
         let displays = layout()
         let screens = PresetThumbnailGeometry.screens(for: displays, width: 80, height: 40)

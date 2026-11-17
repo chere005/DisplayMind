@@ -23,3 +23,5 @@
 ## Preflight
 
 The display identity and preset organization update passed all 147 Swift tests, read-only diagnostics, and the independent fake-backend watchdog smoke check on 2026-11-16. The former watchdog timeout is resolved. Builds used a task-local `SDKROOT` from `xcrun --no-cache --sdk macosx --show-sdk-path` because xcrun's cached SDK did not match the selected Xcode; no global Xcode settings changed.
+
+The three-way UI, accessibility and correctness review passed all 164 Swift tests, nine pure installer process fixtures, read-only diagnostics and the fake-backend watchdog check with no compiler warnings. Light/dark renders covered minimum editor sizes, long names, error contrast and folder states; live checks covered rename validation, editor cancellation and selected display accessibility. Editing is guarded during display changes, stale refreshes cannot overwrite newer state, and the installer scopes termination to the installed GUI.

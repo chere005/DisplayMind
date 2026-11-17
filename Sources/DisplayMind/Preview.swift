@@ -99,6 +99,13 @@ import DisplayMindCore
             store.displays.append(ConnectedDisplay(setting: extra, modes: [extra.mode]))
             monitorFilter = [extra.id]
         }
+        let renaming = has("--renaming") ? store.selectedPresetID : nil
+        let renameText = renaming != nil && has("--invalid") ? "" : nil
+        let renameError = renaming != nil && has("--invalid") ? "Give this preset a name." : nil
+        if let renaming, let folderID = store.settings.presets.first(where: { $0.id == renaming })?.folderID,
+           let index = store.settings.presetFolders?.firstIndex(where: { $0.id == folderID }) {
+            store.settings.presetFolders?[index].collapsed = false
+        }
         var size = NSSize(width: 1080, height: 760)
         if let text = value("--size")?.split(separator: "x").compactMap({ Double($0) }), text.count == 2 { size = NSSize(width: text[0], height: text[1]) }
         let content: AnyView
@@ -114,17 +121,18 @@ import DisplayMindCore
             let display = min(max(0, Int(value("--display") ?? "") ?? 0), preset.displays.count - 1)
             var draft = preset
             if has("--invalid"), draft.displays.count > 1 { draft.displays[1].x += 400 }
-            content = AnyView(PresetEditor(store: store, original: draft, selected: draft.displays[display].id, validate: has("--invalid")))
+            content = AnyView(PresetEditor(store: store, original: draft, selected: draft.displays[display].id, validate: has("--invalid"), height: size.height))
         } else if has("--rule-editor"), let rule = store.settings.rules.first ?? store.settings.presets.first.map({ ConnectionRule(name: "Use \($0.name)", presetID: $0.id, requiredDevices: []) }) {
             content = AnyView(RuleEditor(store: store, original: rule))
-        } else { content = AnyView(MainView(store: store, renaming: has("--renaming") ? store.selectedPresetID : nil, monitorFilter: monitorFilter, monitorMatchMode: matchMode)) }
+        } else { content = AnyView(MainView(store: store, renaming: renaming, renameText: renameText, renameError: renameError,
+                                          monitorFilter: monitorFilter, monitorMatchMode: matchMode)) }
         if has("--show") {
             // A real key window with the same synthetic store, for looking at live controls, menus and sheets.
             app.setActivationPolicy(.regular)
             let shown = NSWindow(contentRect: NSRect(origin: .zero, size: size), styleMask: [.titled, .closable, .resizable, .miniaturizable], backing: .buffered, defer: false)
             shown.title = "DisplayMind Preview"
             shown.appearance = appearance
-            shown.contentView = NSHostingView(rootView: MainView(store: store, renaming: has("--renaming") ? store.selectedPresetID : nil, monitorFilter: monitorFilter,
+            shown.contentView = NSHostingView(rootView: MainView(store: store, renaming: renaming, renameText: renameText, renameError: renameError, monitorFilter: monitorFilter,
                                                               monitorMatchMode: matchMode,
                                                               folderEditing: has("--folder-editor"), newFolder: has("--new-folder")))
             shown.center()

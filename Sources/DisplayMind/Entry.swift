@@ -93,6 +93,9 @@ struct WindowContent: View {
 struct MenuContent: View {
     @ObservedObject var store: Store
     @Environment(\.openWindow) private var openWindow
+    private var changeUnavailable: Bool {
+        !store.canEditSavedSettings || store.airPlayScanning || store.editorPreset != nil || store.editorRule != nil
+    }
     var body: some View {
         Text(store.status)
         if let message = store.menuError {
@@ -108,7 +111,7 @@ struct MenuContent: View {
         ForEach(store.settings.presets) { preset in
             Button { Task { await store.apply(preset) } } label: {
                 if store.isActive(preset) { Label(preset.name, systemImage: "checkmark") } else { Text(preset.name) }
-            }.disabled(store.busy || store.pending != nil || store.unavailable(preset) != nil)
+            }.disabled(changeUnavailable || store.unavailable(preset) != nil)
         }
         if store.settings.presets.isEmpty { Text("No presets yet") }
         Divider()
@@ -117,7 +120,7 @@ struct MenuContent: View {
         Button("Capture current layout…") {
             openWindow(id: "main"); NSApplication.shared.activate(ignoringOtherApps: true)
             Task { await store.capture() }
-        }.disabled(store.busy || store.pending != nil)
+        }.disabled(changeUnavailable)
         Divider()
         Button("Quit DisplayMind") { NSApplication.shared.terminate(nil) }.keyboardShortcut("q")
     }
