@@ -9,7 +9,8 @@ public struct SettingsFile {
         let settings = try JSONDecoder().decode(AppSettings.self, from: Data(contentsOf: url))
         guard settings.schemaVersion == 1 else { throw DisplayMindError("These settings were created by a newer DisplayMind. The file has been preserved.") }
         guard Set(settings.presets.map(\.id)).count == settings.presets.count,
-              Set(settings.rules.map(\.id)).count == settings.rules.count else { throw DisplayMindError("Duplicate identifiers in settings. The file has been preserved.") }
+              Set(settings.rules.map(\.id)).count == settings.rules.count,
+              Set((settings.presetFolders ?? []).map(\.id)).count == (settings.presetFolders ?? []).count else { throw DisplayMindError("Duplicate identifiers in settings. The file has been preserved.") }
         for preset in settings.presets { try Configuration.validate(preset) }
         return settings
     }

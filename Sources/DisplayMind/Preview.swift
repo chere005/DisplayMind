@@ -9,6 +9,8 @@ import DisplayMindCore
 ///         [--rules | --editor | --rule-editor] [--settings copy.json] [--select N] [--display N]
 ///         [--airplay] [--airplay-allowed] [--receivers] [--pending] [--empty] [--busy] [--unavailable] [--unconfirmed]
 ///         [--paused] [--long] [--many] [--no-sound] [--no-rules] [--invalid] [--renaming]
+///         [--folders] [--collapsed] [--filter-display N | --filter-empty] [--folder-editor [--new-folder]]
+///         [--filter-displays 0,1] [--match-any] [--filter-panel]
 @MainActor enum Preview {
     static func run(_ args: [String], output: String) -> Never {
         func has(_ flag: String) -> Bool { args.contains(flag) }
@@ -46,6 +48,23 @@ import DisplayMindCore
             store.settings.rules += (1...5).map { ConnectionRule(name: "Rule \($0 + 1)", presetID: first.id, requiredDevices: [store.devices.last!], absentDevices: $0 % 2 == 0 ? [store.devices[0]] : [], enabled: $0 != 3) }
             store.devices += (1...9).map { Device(id: "usb:extra\($0)", name: ["Keyboard", "Trackpad", "Webcam", "USB3.1 Hub", "Audio Interface", "Card Reader", "Ethernet Adapter", "Stream Deck", "Wacom One 12"][$0 - 1], kind: .usb) }
         }
+        if has("--folders") {
+            if !has("--settings"), let first = store.settings.presets.first, let screen = first.displays.first {
+                var portrait = screen
+                portrait.name = "Portrait tablet"; portrait.mode = DisplayMode(width: 1080, height: 1920, hertz: 60)
+                portrait.rotation = 90; portrait.x = 0; portrait.y = 0; portrait.mirrorOf = nil
+                store.settings.presets.append(Preset(name: "Tablet in portrait", displays: [portrait], confirmed: true))
+                var mirrored = first.displays
+                for i in mirrored.indices.dropFirst() { mirrored[i].mirrorOf = mirrored[0].id }
+                store.settings.presets.append(Preset(name: "Mirrored presentation", displays: mirrored, confirmed: true))
+            }
+            let desk = PresetFolder(name: has("--long") ? "Office layouts with a deliberately long folder name" : "Desk setups", collapsed: has("--collapsed"))
+            let drawing = PresetFolder(name: "Drawing")
+            store.settings.presetFolders = [desk, drawing, PresetFolder(name: "Other layouts")]
+            for i in store.settings.presets.indices {
+                store.settings.presets[i].folderID = i % 3 == 0 ? desk.id : i % 3 == 1 ? drawing.id : nil
+            }
+        }
         if has("--no-rules") { store.settings.rules = [] }
         if has("--no-sound") { for i in store.settings.presets.indices { store.settings.presets[i].audio = nil } }
         if has("--empty") { store.settings.presets = []; store.settings.rules = [] }
@@ -66,24 +85,48 @@ import DisplayMindCore
             store.pending = Store.PendingChange(journal: RecoveryJournal(deadline: Date().addingTimeInterval(7), previous: preset.displays), preset: preset)
             store.secondsRemaining = 7; store.status = "Applied \(preset.name). Revert within 10 seconds if it is wrong."
         }
+        var monitorFilter: Set<String> = []
+        let matchMode: PresetOrganization.MatchMode = has("--match-any") ? .any : .all
+        let monitors = PresetOrganization.monitors(presets: store.settings.presets, connected: store.displays)
+        if let index = value("--filter-display").flatMap(Int.init) {
+            if monitors.indices.contains(index) { monitorFilter.insert(monitors[index].id) }
+        }
+        if let indexes = value("--filter-displays")?.split(separator: ",").compactMap({ Int($0) }) {
+            for index in indexes where monitors.indices.contains(index) { monitorFilter.insert(monitors[index].id) }
+        }
+        if has("--filter-empty") {
+            let extra = DisplaySetting(id: "00000000-0000-0000-0000-000000000099", name: "Projector", mode: DisplayMode(width: 1920, height: 1080))
+            store.displays.append(ConnectedDisplay(setting: extra, modes: [extra.mode]))
+            monitorFilter = [extra.id]
+        }
         var size = NSSize(width: 1080, height: 760)
         if let text = value("--size")?.split(separator: "x").compactMap({ Double($0) }), text.count == 2 { size = NSSize(width: text[0], height: text[1]) }
         let content: AnyView
-        if has("--editor"), let preset = store.selectedPreset ?? store.settings.presets.first {
+        if has("--filter-panel") {
+            content = AnyView(PresetMonitorFilterPanel(monitors: PresetOrganization.monitors(presets: store.settings.presets, connected: store.displays),
+                                                      selected: .constant(monitorFilter), matching: .constant(matchMode),
+                                                      matchCount: PresetOrganization.filtered(store.settings.presets, monitorIDs: monitorFilter, matching: matchMode).count, done: {}))
+        } else if has("--folder-editor") {
+            content = AnyView(PresetFolderNameEditor(folder: has("--new-folder") ? nil : store.settings.presetFolders?.first,
+                                                   validationError: has("--invalid") ? "A folder with that name already exists." : nil, cancel: {}, save: { _ in nil })
+                .background(Color(nsColor: .windowBackgroundColor)))
+        } else if has("--editor"), let preset = store.selectedPreset ?? store.settings.presets.first {
             let display = min(max(0, Int(value("--display") ?? "") ?? 0), preset.displays.count - 1)
             var draft = preset
             if has("--invalid"), draft.displays.count > 1 { draft.displays[1].x += 400 }
             content = AnyView(PresetEditor(store: store, original: draft, selected: draft.displays[display].id, validate: has("--invalid")))
         } else if has("--rule-editor"), let rule = store.settings.rules.first ?? store.settings.presets.first.map({ ConnectionRule(name: "Use \($0.name)", presetID: $0.id, requiredDevices: []) }) {
             content = AnyView(RuleEditor(store: store, original: rule))
-        } else { content = AnyView(MainView(store: store, renaming: has("--renaming") ? store.selectedPresetID : nil)) }
+        } else { content = AnyView(MainView(store: store, renaming: has("--renaming") ? store.selectedPresetID : nil, monitorFilter: monitorFilter, monitorMatchMode: matchMode)) }
         if has("--show") {
             // A real key window with the same synthetic store, for looking at live controls, menus and sheets.
             app.setActivationPolicy(.regular)
             let shown = NSWindow(contentRect: NSRect(origin: .zero, size: size), styleMask: [.titled, .closable, .resizable, .miniaturizable], backing: .buffered, defer: false)
             shown.title = "DisplayMind Preview"
             shown.appearance = appearance
-            shown.contentView = NSHostingView(rootView: MainView(store: store, renaming: has("--renaming") ? store.selectedPresetID : nil))
+            shown.contentView = NSHostingView(rootView: MainView(store: store, renaming: has("--renaming") ? store.selectedPresetID : nil, monitorFilter: monitorFilter,
+                                                              monitorMatchMode: matchMode,
+                                                              folderEditing: has("--folder-editor"), newFolder: has("--new-folder")))
             shown.center()
             shown.makeKeyAndOrderFront(nil)
             app.activate(ignoringOtherApps: true)
@@ -95,7 +138,7 @@ import DisplayMindCore
         }
         app.finishLaunching()
         let view = NSHostingView(rootView: content)
-        if has("--editor") || has("--rule-editor") { size = view.fittingSize }
+        if has("--editor") || has("--rule-editor") || has("--folder-editor") || has("--filter-panel") { size = view.fittingSize }
         let window = NSWindow(contentRect: NSRect(x: -20000, y: -20000, width: size.width, height: size.height), styleMask: [.borderless], backing: .buffered, defer: false)
         window.appearance = appearance
         window.contentView = view

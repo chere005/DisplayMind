@@ -33,11 +33,24 @@ enum ProcessRunner {
 
 struct DisplayBackend {
     let helper: URL
+    var identify: @Sendable ([ConnectedDisplay]) -> [ConnectedDisplay]
     /// Passes and the pause before each verification read; macOS reports a stale layout right after a reconfiguration.
     var attempts = 3
     var settle: TimeInterval = 1.5
-    init(helper: URL = Bundle.main.executableURL!.deletingLastPathComponent().appendingPathComponent("displayplacer")) { self.helper = helper }
-    func read() throws -> [ConnectedDisplay] { try DisplayParser.parse(ProcessRunner.run(helper, arguments: ["list"])) }
+    init(helper: URL? = nil, identify: (@Sendable ([ConnectedDisplay]) -> [ConnectedDisplay])? = nil) {
+        let resolved = helper ?? Bundle.main.executableURL!.deletingLastPathComponent().appendingPathComponent("displayplacer")
+        self.helper = resolved
+        if let identify { self.identify = identify }
+        else if helper == nil && Self.isNativeHelper(resolved) { self.identify = { Hardware.identifyDisplays($0) } }
+        else { self.identify = { $0 } }
+    }
+    /// The watchdog smoke fixture puts a shell script at the default path; it must not query real display identities.
+    private static func isNativeHelper(_ helper: URL) -> Bool {
+        guard let file = try? FileHandle(forReadingFrom: helper) else { return false }
+        defer { try? file.close() }
+        return (try? file.read(upToCount: 4)) == Data([0xcf, 0xfa, 0xed, 0xfe])
+    }
+    func read() throws -> [ConnectedDisplay] { try identify(DisplayParser.parse(ProcessRunner.run(helper, arguments: ["list"]))) }
     func apply(_ displays: [DisplaySetting]) throws { _ = try ProcessRunner.run(helper, arguments: Configuration.arguments(for: displays)) }
     /// What an apply would do to mirroring and rotation (`keep`, `unset`, `set`, `rotate`, `missing`, or `unchanged`). Read-only.
     func plan(_ displays: [DisplaySetting]) throws -> [String] {
@@ -104,14 +117,30 @@ enum Hardware {
         }
     }
 
-    /// macOS names only the screens it draws to. A mirror has no NSScreen, so its name comes from CoreDisplay's info dictionary
-    /// (the EDID or receiver name); failing that it keeps the parser's placeholder.
+    /// Read-only identity access also used by the independent watchdog, without touching AppKit or NSScreen.
+    static func identifyDisplays(_ displays: [ConnectedDisplay]) -> [ConnectedDisplay] {
+        displays.map { display in
+            var copy = display
+            copy.setting.identity = nil
+            guard display.contextualID != 0,
+                  let uuid = CGDisplayCreateUUIDFromDisplayID(display.contextualID)?.takeRetainedValue(),
+                  let id = CFUUIDCreateString(nil, uuid),
+                  UUID(uuidString: id as String) == UUID(uuidString: display.id),
+                  (info(display.contextualID)?["kCGDisplayIsAirPlay"] as? NSNumber)?.boolValue != true else { return copy }
+            let identity = DisplayIdentity(vendor: CGDisplayVendorNumber(display.contextualID),
+                                           model: CGDisplayModelNumber(display.contextualID),
+                                           serial: CGDisplaySerialNumber(display.contextualID))
+            if identity.isUsable { copy.setting.identity = identity }
+            return copy
+        }
+    }
+    /// macOS names only screens it draws to. Mirrors take their name from CoreDisplay instead.
     @MainActor static func nameDisplays(_ displays: [ConnectedDisplay]) -> [ConnectedDisplay] {
         let names = Dictionary(NSScreen.screens.compactMap { screen -> (UInt32, String)? in
             guard let id = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? UInt32 else { return nil }
             return (id, screen.localizedName)
         }, uniquingKeysWith: { a, _ in a })
-        return displays.map { display in
+        return identifyDisplays(displays).map { display in
             var copy = display
             if let name = names[display.contextualID] ?? (display.builtIn ? nil : productName(display.contextualID)) { copy.setting.name = name }
             return copy
@@ -505,7 +534,11 @@ struct RecoveryController {
         do {
             let actual = try backend.read()
             let connected = Set(actual.map(\.id))
-            var previous = journal.previous.filter { connected.contains($0.id) }
+            var saved = AppSettings()
+            saved.presets = [Preset(name: "Previous layout", displays: journal.previous)]
+            let wireless = Set(([journal.startedAirPlay].compactMap { $0 } + (journal.stoppedAirPlay ?? [])).map(\.displayID))
+            let rebound = DisplayReconciliation.reconcile(settings: saved, connected: actual, excluded: wireless)
+            var previous = rebound.presets[0].displays.filter { connected.contains($0.id) }
             guard !previous.isEmpty else { throw DisplayMindError("The previous displays are disconnected. Use macOS Display Settings to choose the available layout.") }
             for i in previous.indices {
                 if let parent = previous[i].mirrorOf, !connected.contains(parent) { previous[i].mirrorOf = nil }

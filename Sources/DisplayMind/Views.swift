@@ -64,17 +64,30 @@ struct MainView: View {
     @State private var renamingID: UUID?
     @State private var renameText: String
     @FocusState private var renameFocused: Bool
+    @FocusState private var focusedPresetID: UUID?
+    @State private var monitorFilter: Set<String>
+    @State private var monitorMatchMode: PresetOrganization.MatchMode
+    @State private var folderEditor: FolderEditor?
+    @State private var deletingFolder: PresetFolder?
+    @State private var newFolderScrollTarget: UUID?
     private var locked: Bool { store.busy || store.pending != nil }
+    private struct FolderEditor: Identifiable {
+        var id = UUID()
+        var folder: PresetFolder?
+    }
     /// `renaming` opens with that preset's name already being edited (previews).
-    init(store: Store, renaming: UUID? = nil) {
+    init(store: Store, renaming: UUID? = nil, monitorFilter: Set<String> = [], monitorMatchMode: PresetOrganization.MatchMode = .all, folderEditing: Bool = false, newFolder: Bool = false) {
         self.store = store
         _renamingID = State(initialValue: renaming)
         _renameText = State(initialValue: store.settings.presets.first { $0.id == renaming }?.name ?? "")
+        _monitorFilter = State(initialValue: monitorFilter)
+        _monitorMatchMode = State(initialValue: monitorMatchMode)
+        _folderEditor = State(initialValue: folderEditing ? FolderEditor(folder: newFolder ? nil : store.settings.presetFolders?.first) : nil)
     }
 
     var body: some View {
         HStack(spacing: 0) {
-            sidebar.frame(width: 244)
+            sidebar.frame(width: 280)
             Divider()
             VStack(spacing: 0) {
                 header
@@ -84,7 +97,8 @@ struct MainView: View {
                     VStack(alignment: .leading, spacing: 20) {
                         if store.showRules { rulesContent }
                         else if let preset = store.selectedPreset { presetContent(preset) }
-                        else { welcome }
+                        else if store.settings.presets.isEmpty { welcome }
+                        else { selectionEmpty }
                     }.padding(28).frame(maxWidth: .infinity, alignment: .leading)
                 }
                 Divider()
@@ -95,6 +109,24 @@ struct MainView: View {
         .background(Color(nsColor: .windowBackgroundColor))
         .sheet(item: $store.editorPreset) { PresetEditor(store: store, original: $0) }
         .sheet(item: $store.editorRule) { RuleEditor(store: store, original: $0) }
+        .sheet(item: $folderEditor) { editor in
+            PresetFolderNameEditor(folder: editor.folder, cancel: { folderEditor = nil }) { name in
+                let saved: Bool
+                if let folder = editor.folder {
+                    saved = store.renamePresetFolder(id: folder.id, to: name)
+                } else if let id = store.createPresetFolder(name: name) {
+                    saved = true
+                    monitorFilter = []
+                    newFolderScrollTarget = id
+                } else {
+                    saved = false
+                }
+                if saved { folderEditor = nil; alignPresetSelection(); return nil }
+                let message = store.error ?? "This folder could not be saved."
+                store.dismissError()
+                return message
+            }
+        }
         .alert("DisplayMind", isPresented: Binding(get: { store.error != nil }, set: { if !$0 { store.dismissError() } })) {
             Button("OK", role: .cancel) { store.dismissError() }
         } message: { Text(store.error ?? "") }
@@ -106,6 +138,19 @@ struct MainView: View {
             Button("Delete", role: .destructive) { if let deletingRule { store.deleteRule(deletingRule) }; deletingRule = nil }
             Button("Cancel", role: .cancel) { deletingRule = nil }
         } message: { Text("The preset it applies is kept.") }
+        .alert("Remove the folder \(deletingFolder?.name ?? "")?", isPresented: Binding(get: { deletingFolder != nil }, set: { if !$0 { deletingFolder = nil } })) {
+            Button("Remove folder", role: .destructive) {
+                if let folder = deletingFolder { _ = store.deletePresetFolder(id: folder.id) }
+                deletingFolder = nil
+                alignPresetSelection()
+            }
+            Button("Cancel", role: .cancel) { deletingFolder = nil }
+        } message: { Text("Its presets are kept and moved to Ungrouped. Connection rules are kept.") }
+        .onChange(of: monitorFilter) { _ in commitRename(); alignPresetSelection() }
+        .onChange(of: monitorMatchMode) { _ in commitRename(); alignPresetSelection() }
+        .onAppear { alignPresetSelection() }
+        .onChange(of: store.settings) { _ in normalizeMonitorFilter() }
+        .onChange(of: monitorOptions.map(\.id)) { _ in normalizeMonitorFilter() }
     }
 
     // MARK: Sidebar
@@ -116,21 +161,60 @@ struct MainView: View {
                 Image(nsImage: Branding.logo).resizable().frame(width: 30, height: 30).accessibilityHidden(true)
                 Text("DisplayMind").font(.system(size: 17, weight: .semibold, design: .rounded))
             }.padding(.horizontal, 20).padding(.top, 26).padding(.bottom, 20)
-            SectionLabel("Presets").padding(.horizontal, 20).padding(.bottom, 8)
+            HStack {
+                SectionLabel("Presets")
+                Spacer()
+                IconButton(symbol: "folder.badge.plus", help: "New preset folder") { folderEditor = FolderEditor() }
+                    .disabled(locked)
+            }.padding(.leading, 20).padding(.trailing, 14).padding(.bottom, 4)
+            VStack(alignment: .leading, spacing: 5) {
+                HStack {
+                    Text("Includes displays").font(.caption).foregroundStyle(.secondary)
+                    Spacer()
+                    if !monitorFilter.isEmpty {
+                        Button("Clear") { monitorFilter = [] }.buttonStyle(.plain).font(.caption).foregroundStyle(Branding.text)
+                            .accessibilityLabel("Clear display filter")
+                    }
+                }
+                PresetMonitorFilter(monitors: monitorOptions, selected: $monitorFilter, matching: $monitorMatchMode, matchCount: matchingPresets.count)
+            }.padding(.horizontal, 16).padding(.bottom, 10)
             ScrollViewReader { proxy in
             ScrollView {
-                VStack(spacing: 2) {
-                    ForEach(store.settings.presets) { preset in
-                        Group { if renamingID == preset.id { renameRow(preset) } else { presetRow(preset) } }.id(preset.id)
+                VStack(alignment: .leading, spacing: 2) {
+                    ForEach(presetGroups) { group in
+                        if let folder = group.folder {
+                            folderHeader(folder, group: group).id(folder.id)
+                            if !folder.collapsed {
+                                presetRows(group.presets).padding(.leading, 10)
+                                if group.presets.isEmpty {
+                                    Text("Move presets here from their ⋯ menu.").font(.caption).foregroundStyle(.secondary)
+                                        .fixedSize(horizontal: false, vertical: true).padding(.leading, 20).padding(.trailing, 10).padding(.bottom, 8)
+                                }
+                            }
+                        } else {
+                            if !(store.settings.presetFolders ?? []).isEmpty {
+                                SectionLabel("Ungrouped").padding(.horizontal, 10).padding(.top, 8).padding(.bottom, 3)
+                            }
+                            presetRows(group.presets)
+                        }
                     }
                     if store.settings.presets.isEmpty {
                         Text("No presets yet. Capture your current layout to make the first one.")
                             .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                             .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 10).padding(.vertical, 6)
+                    } else if !monitorFilter.isEmpty && matchingPresets.isEmpty {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text(monitorFilter.count == 1 ? "No presets include this display." : "No presets match these displays.").foregroundStyle(.secondary)
+                            Button("Clear display filter") { monitorFilter = [] }.buttonStyle(.plain).foregroundStyle(Branding.text)
+                        }.font(.callout).padding(.horizontal, 10).padding(.vertical, 8)
                     }
                 }.padding(.horizontal, 10)
             }
             .onChange(of: renamingID) { id in if let id { proxy.scrollTo(id, anchor: .center) } }
+            .onChange(of: focusedPresetID) { id in if let id { proxy.scrollTo(id, anchor: .center) } }
+            .onChange(of: newFolderScrollTarget) { id in
+                if let id { DispatchQueue.main.async { proxy.scrollTo(id, anchor: .top) } }
+            }
             .onChange(of: renameFocused) { focused in if !focused { commitRename() } }   // clicking elsewhere keeps the typed name
             }
             Button { Task { await store.capture() } } label: {
@@ -147,6 +231,7 @@ struct MainView: View {
                 }.padding(.horizontal, 10).padding(.vertical, 9).contentShape(Rectangle())
                     .background(store.showRules ? Branding.selection : .clear, in: RoundedRectangle(cornerRadius: 8))
             }.buttonStyle(.plain).padding(.horizontal, 10).padding(.top, 10)
+                .accessibilityAddTraits(store.showRules ? .isSelected : [])
             VStack(alignment: .leading, spacing: 10) {
                 SwitchRow(title: "Automatic switching", isOn: Binding(get: { store.settings.automationEnabled }, set: store.toggleAutomation))
                 SwitchRow(title: "Open at login", isOn: Binding(get: { store.loginEnabled }, set: store.setLogin))
@@ -158,6 +243,73 @@ struct MainView: View {
         }.background(Color.primary.opacity(0.03))
     }
 
+    private var monitorOptions: [PresetOrganization.Monitor] {
+        PresetOrganization.monitors(presets: store.settings.presets, connected: store.displays)
+    }
+    private var matchingPresets: [Preset] {
+        PresetOrganization.filtered(store.settings.presets, monitorIDs: monitorFilter, matching: monitorMatchMode)
+    }
+    private var presetGroups: [PresetOrganization.Group] {
+        PresetOrganization.groups(settings: store.settings, monitorIDs: monitorFilter, matching: monitorMatchMode)
+    }
+    private func normalizeMonitorFilter() {
+        let available = Set(monitorOptions.map(\.id))
+        monitorFilter = Set(monitorFilter.map { store.currentDisplayID($0) }).intersection(available)
+        alignPresetSelection()
+    }
+    private func alignPresetSelection() {
+        if matchingPresets.contains(where: { $0.id == store.selectedPresetID }) { return }
+        let visible = PresetOrganization.visiblePresets(settings: store.settings, monitorIDs: monitorFilter, matching: monitorMatchMode)
+        store.selectedPresetID = visible.first?.id ?? matchingPresets.first?.id
+    }
+    private func presetRows(_ presets: [Preset]) -> some View {
+        ForEach(presets) { preset in
+            Group { if renamingID == preset.id { renameRow(preset) } else { presetRow(preset) } }.id(preset.id)
+        }
+    }
+    private func movePresetFocus(_ direction: MoveCommandDirection, from id: UUID) {
+        guard direction == .up || direction == .down else { return }
+        let visible = PresetOrganization.visiblePresets(settings: store.settings, monitorIDs: monitorFilter, matching: monitorMatchMode)
+        guard let current = visible.firstIndex(where: { $0.id == id }) else { return }
+        let next = current + (direction == .up ? -1 : 1)
+        guard visible.indices.contains(next) else { return }
+        store.selectedPresetID = visible[next].id
+        store.showRules = false
+        focusedPresetID = visible[next].id
+    }
+    private func folderHeader(_ folder: PresetFolder, group: PresetOrganization.Group) -> some View {
+        let containsSelection = !store.showRules && group.presets.contains(where: { $0.id == store.selectedPresetID })
+        return HStack(spacing: 2) {
+            Button {
+                commitRename()
+                if store.setPresetFolderCollapsed(id: folder.id, collapsed: !folder.collapsed) { alignPresetSelection() }
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: folder.collapsed ? "chevron.right" : "chevron.down").font(.system(size: 9, weight: .semibold)).frame(width: 10)
+                    Image(systemName: folder.collapsed ? "folder" : "folder.fill").foregroundStyle(folder.collapsed && containsSelection ? Branding.text : Color.secondary)
+                    Text(folder.name).font(.system(size: 12, weight: .semibold)).lineLimit(1).help(folder.name)
+                    Spacer(minLength: 2)
+                    Text(monitorFilter.isEmpty ? "\(group.totalCount)" : "\(group.presets.count)/\(group.totalCount)")
+                        .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                }.padding(.vertical, 8).contentShape(Rectangle())
+            }.buttonStyle(.plain)
+                .accessibilityLabel("\(folder.collapsed ? "Expand" : "Collapse") \(folder.name)")
+                .accessibilityValue(containsSelection ? "Contains selected preset" : "")
+                .disabled(locked)
+            Menu {
+                Button("Rename folder…") { folderEditor = FolderEditor(folder: folder) }
+                Button("Remove folder…", role: .destructive) { deletingFolder = folder }
+            } label: { Image(systemName: "ellipsis").frame(width: 22, height: 24) }
+                .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+                .help("Folder actions").accessibilityLabel("Actions for \(folder.name)").disabled(locked)
+        }.padding(.leading, 8).padding(.trailing, 4).padding(.top, 5)
+            .background(folder.collapsed && containsSelection ? Branding.selection : .clear, in: RoundedRectangle(cornerRadius: 8))
+            .contextMenu {
+                Button("Rename folder…") { folderEditor = FolderEditor(folder: folder) }.disabled(locked)
+                Button("Remove folder…", role: .destructive) { deletingFolder = folder }.disabled(locked)
+            }
+    }
+
     private func beginRename(_ preset: Preset) {
         guard !locked else { return }
         renameText = preset.name
@@ -165,20 +317,25 @@ struct MainView: View {
         renamingID = preset.id
         DispatchQueue.main.async { renameFocused = true }
     }
-    private func commitRename() {
+    private func commitRename(restoreFocus: Bool = false) {
         guard let id = renamingID else { return }
         renamingID = nil
         if let preset = store.settings.presets.first(where: { $0.id == id }) { store.rename(preset, to: renameText) }
+        if restoreFocus { DispatchQueue.main.async { focusedPresetID = id } }
     }
-    private func cancelRename() { renamingID = nil }
+    private func cancelRename() {
+        guard let id = renamingID else { return }
+        renamingID = nil
+        DispatchQueue.main.async { focusedPresetID = id }
+    }
 
     /// The sidebar row while its name is edited: Return or a click elsewhere keeps the name, Escape discards it.
     private func renameRow(_ preset: Preset) -> some View {
         HStack(spacing: 10) {
-            Image(systemName: preset.displays.count > 1 ? "display.2" : "display").frame(width: 24).foregroundStyle(Branding.text)
+            PresetThumbnail(displays: preset.displays, selected: true)
             TextField("Preset name", text: $renameText).textFieldStyle(.roundedBorder).font(.system(size: 13, weight: .medium))
                 .focused($renameFocused)
-                .onSubmit { commitRename() }
+                .onSubmit { commitRename(restoreFocus: true) }
                 .onExitCommand { cancelRename() }
                 .accessibilityLabel("Preset name")
         }.padding(.horizontal, 10).padding(.vertical, 8)
@@ -187,10 +344,9 @@ struct MainView: View {
 
     private func presetRow(_ preset: Preset) -> some View {
         let selected = !store.showRules && store.selectedPresetID == preset.id
-        return Button { store.selectedPresetID = preset.id; store.showRules = false } label: {
+        return Button { store.selectedPresetID = preset.id; store.showRules = false; focusedPresetID = preset.id } label: {
             HStack(spacing: 10) {
-                Image(systemName: preset.displays.count > 1 ? "display.2" : "display").frame(width: 24)
-                    .foregroundStyle(selected ? Branding.text : Color.secondary)
+                PresetThumbnail(displays: preset.displays, selected: selected)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(preset.name).font(.system(size: 13, weight: .medium)).lineLimit(2).multilineTextAlignment(.leading).fixedSize(horizontal: false, vertical: true)
                     Text("\(preset.displays.count) display\(preset.displays.count == 1 ? "" : "s")" + (store.isActive(preset) ? " · Active" : ""))
@@ -200,18 +356,24 @@ struct MainView: View {
             }.padding(.horizontal, 10).padding(.vertical, 8).contentShape(Rectangle())
                 .background(selected ? Branding.selection : .clear, in: RoundedRectangle(cornerRadius: 8))
         }.buttonStyle(.plain).help(preset.name)
+            .focusable()
+            .focused($focusedPresetID, equals: preset.id)
+            .onMoveCommand { movePresetFocus($0, from: preset.id) }
+            .accessibilityAddTraits(selected ? .isSelected : [])
             .simultaneousGesture(TapGesture(count: 2).onEnded { beginRename(preset) })
             .accessibilityAction(named: "Rename") { beginRename(preset) }
             .contextMenu {
                 Button("Apply") { Task { await store.apply(preset) } }.disabled(locked || store.unavailable(preset) != nil)
                 Button("Edit preset…") { store.editorPreset = preset }.disabled(locked)
-                presetMenu(preset)
+                presetMenu(preset).disabled(locked)
             }
     }
 
     // MARK: Header
 
-    private var title: String { store.showRules ? "Connection rules" : store.selectedPreset?.name ?? "Your displays, arranged." }
+    private var title: String {
+        store.showRules ? "Connection rules" : store.selectedPreset?.name ?? (store.settings.presets.isEmpty ? "Your displays, arranged." : "Choose a preset")
+    }
 
     private var header: some View {
         HStack(spacing: 12) {
@@ -243,7 +405,7 @@ struct MainView: View {
                 Label("Ready to apply", systemImage: "checkmark.circle").foregroundStyle(.secondary)
             }
         } else {
-            Text("Save a layout, then switch to it in a click.").foregroundStyle(.secondary)
+            Text(store.settings.presets.isEmpty ? "Save a layout, then switch to it in a click." : "Choose a preset from the sidebar.").foregroundStyle(.secondary)
         }
     }
 
@@ -252,8 +414,7 @@ struct MainView: View {
             Button { Task { await store.apply(preset) } } label: { Label("Apply preset", systemImage: "play.fill") }
                 .buttonStyle(.borderedProminent).tint(Branding.fill).disabled(locked || store.unavailable(preset) != nil)
             Button("Edit preset…") { store.editorPreset = preset }.disabled(locked)
-            // As text the glyph has a line's height; as a bare image the menu button comes out shorter than its neighbours.
-            Menu { presetMenu(preset) } label: { Text(Image(systemName: "ellipsis")) }
+            Menu { presetMenu(preset) } label: { Text("⋯").frame(width: 16) }
                 .menuStyle(.button).buttonStyle(.bordered).menuIndicator(.hidden).fixedSize()
                 .help("More actions").accessibilityLabel("More actions").disabled(locked)
         }.controlSize(.large).fixedSize()
@@ -262,6 +423,21 @@ struct MainView: View {
     @ViewBuilder private func presetMenu(_ preset: Preset) -> some View {
         Button("Rename") { beginRename(preset) }
         Button("Duplicate…") { store.duplicate(preset) }
+        Menu("Move to folder") {
+            Button {
+                if store.movePreset(id: preset.id, to: nil) { alignPresetSelection() }
+            } label: {
+                if preset.folderID == nil { Label("Ungrouped", systemImage: "checkmark") } else { Text("Ungrouped") }
+            }
+            if !(store.settings.presetFolders ?? []).isEmpty { Divider() }
+            ForEach(store.settings.presetFolders ?? []) { folder in
+                Button {
+                    if store.movePreset(id: preset.id, to: folder.id) { alignPresetSelection() }
+                } label: {
+                    if preset.folderID == folder.id { Label(folder.name, systemImage: "checkmark") } else { Text(folder.name) }
+                }
+            }
+        }
         Button("Create connection rule…") { store.editorRule = rule(for: preset) }
         Divider()
         Button("Delete preset…", role: .destructive) { deletingPreset = preset }
@@ -370,6 +546,19 @@ struct MainView: View {
         }
     }
 
+    private var selectionEmpty: some View {
+        Card {
+            VStack(alignment: .leading, spacing: 10) {
+                Image(systemName: monitorFilter.isEmpty ? "folder" : "line.3.horizontal.decrease.circle").font(.system(size: 28)).foregroundStyle(.secondary)
+                Text(monitorFilter.isEmpty ? "Choose a preset" : "No matching presets").font(.title3).fontWeight(.semibold)
+                Text(monitorFilter.isEmpty ? "Choose a saved layout from the sidebar." : monitorFilter.count > 1 && monitorMatchMode == .all
+                     ? "Choose fewer displays, switch to Any selected, or clear the display filter." : "Choose different displays or clear the display filter.")
+                    .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                if !monitorFilter.isEmpty { Button("Clear display filter") { monitorFilter = [] } }
+            }.padding(22).frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
     // MARK: Rules page
 
     private var rulesContent: some View {
@@ -463,6 +652,44 @@ struct MainView: View {
         if !rule.absentDevices.isEmpty { parts.append("Absent: " + rule.absentDevices.map(\.name).joined(separator: ", ")) }
         if rule.exactDisplays { parts.append("no other displays") }
         return parts.joined(separator: " · ")
+    }
+}
+
+struct PresetFolderNameEditor: View {
+    let folder: PresetFolder?
+    let cancel: () -> Void
+    let save: (String) -> String?
+    @State private var name: String
+    @State private var validationError: String?
+    @FocusState private var focused: Bool
+    init(folder: PresetFolder?, validationError: String? = nil, cancel: @escaping () -> Void, save: @escaping (String) -> String?) {
+        self.folder = folder; self.cancel = cancel; self.save = save
+        _name = State(initialValue: folder?.name ?? "")
+        _validationError = State(initialValue: validationError)
+    }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text(folder == nil ? "New preset folder" : "Rename preset folder").font(.title2).fontWeight(.semibold)
+            TextField("Folder name", text: $name).textFieldStyle(.roundedBorder).focused($focused)
+                .onSubmit { saveName() }.accessibilityLabel("Folder name")
+            if let validationError {
+                Label(validationError, systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true)
+            }
+            HStack {
+                Spacer()
+                Button("Cancel", action: cancel).keyboardShortcut(.cancelAction)
+                Button(folder == nil ? "Create folder" : "Rename folder") { saveName() }
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+        }.padding(24).frame(width: 360)
+            .onAppear { focused = true }
+            .onChange(of: name) { _ in validationError = nil }
+    }
+    private func saveName() {
+        guard !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        validationError = save(name)
     }
 }
 

@@ -8,6 +8,8 @@ A small native macOS app for display presets and connection-based defaults.
 
 - Capture the current arrangement, then edit rotation, resolution, refresh rate, main display, extended positions, and mirroring.
 - Switch presets from the window or menu bar.
+- Filter presets by included monitors, organize them into collapsible folders, and see each saved arrangement in its thumbnail.
+- Recognize the same physical monitor after a dock assigns it a different display UUID.
 - Connect a saved AirPlay receiver before applying a preset, including from connection rules.
 - Apply a default when selected displays or USB docks/devices are connected or absent.
 - Arrange rule priority; require an exact display set or allow extra displays.
@@ -23,6 +25,8 @@ In **Connection rules**, choose a preset and mark each relevant display or USB d
 [Layout editor](docs/preset-editor.png) · [Connection rules](docs/connection-rules.png) · [Rule editor](docs/rule-editor.png)
 
 An edited preset must be applied and kept once before it can run automatically. Every application is verified against the preset and retried up to three times while macOS settles (a mirror can drop after a rotation); automatic applications revert on failure. Newly connected USB devices appear automatically. Previously selected devices remain available in the rule editor after disconnecting.
+
+Use **Includes displays** above the preset list to check several monitors without reopening the filter. **All selected** finds layouts containing every checked monitor; **Any selected** finds layouts containing at least one. The result count updates as you choose, and **Clear** shows all presets again. Saved monitors remain in the filter when disconnected. The folder-plus button creates a folder. A preset's **Move to folder** menu assigns it, and a folder's chevron collapses or expands its contents. Folder names and collapsed states are saved, and collapsing a folder keeps the current preset selected. Arrow keys move between visible preset rows when the list has keyboard focus. Removing a folder keeps its presets under **Ungrouped** and keeps their connection rules. Each preset's thumbnail shows its saved arrangement, with the main screen highlighted and mirrors stacked behind their source.
 
 ## AirPlay
 
@@ -66,7 +70,7 @@ Release: `tools/tdtp.sh` (full preflight) or `tools/dtp.sh` (build, `--diagnosti
 
 ## Storage and privacy
 
-Settings and rollback journals live in `~/Library/Application Support/DisplayMind`; a `~/DisplayMind` folder from 0.4 and earlier is moved there on first launch. The app has no analytics or account. Display UUIDs, USB identities, AirPlay receiver selections, and sound device names and UIDs stay in local settings. macOS handles the network connection and screen streaming when AirPlay is selected. **Open data folder** reveals local settings. Invalid or newer settings files are preserved and reported instead of silently reset. Existing presets without an AirPlay or sound setting retain their behavior.
+Settings and rollback journals live in `~/Library/Application Support/DisplayMind`; a `~/DisplayMind` folder from 0.4 and earlier is moved there on first launch. The app has no analytics or account. Display UUIDs and hardware identities, preset folders and their collapsed state, USB identities, AirPlay receiver selections, and sound device names and UIDs stay in local settings. macOS handles the network connection and screen streaming when AirPlay is selected. **Open data folder** reveals local settings. Invalid or newer settings files are preserved and reported instead of silently reset. Existing presets without an AirPlay or sound setting retain their behavior.
 
 While a preset is being applied, and for the revert window after it, `pending-change.json` holds the previous configuration. A separate watchdog restores it if you revert, or if the apply never finishes because the app hangs or exits mid-change. Once the new layout has verified it stays, even if the app exits before the window closes. A failed rollback retains a `restoring-*.json` snapshot and records the failure. Reopening the app resumes recovery for an interrupted pending change. It also finishes a restore the watchdog claimed but never completed (a `restoring-*.json` with no result, under an hour old), and reports a failed recovery that happened while the app was closed, once.
 
@@ -76,7 +80,7 @@ Automatic switches post a notification ("Automatically applied …"). With the w
 
 Display control uses a bundled build of [displayplacer 1.4.0](https://github.com/jakehilborn/displayplacer/tree/v1.4.0), under its MIT license. Rotation relies on Apple's private MonitorPanel framework. Available modes, rotation, and mirroring depend on macOS and the display/driver; rejected settings trigger recovery. The editor shows modes reported for the current orientation and transposes dimensions when rotated. macOS can reject a particular rotated mode.
 
-Mirrored displays share their source's rotation, resolution, and position. A preset that keeps a mirror leaves it connected while it is applied, so an AirPlay mirror does not drop because another display rotates. macOS names only the screens it draws to, so a mirror takes its product name from the display itself; a preset captured earlier with a placeholder such as “External display 2” picks up the real name the next time that display is connected. AirPlay presets can initiate their saved receiver connection; other displays must already be connected. Display UUIDs normally persist but can change with some docks, adapters, or macOS updates; capture the layout again if macOS assigns a new identity. USB devices without serial numbers are identified by vendor, product, and port, so moving one to another port requires updating its rule. Display disabling is not offered in the editor; an already disabled display is preserved when captured.
+Mirrored displays share their source's rotation, resolution, and position. A preset that keeps a mirror leaves it connected while it is applied, so an AirPlay mirror does not drop because another display rotates. macOS names only the screens it draws to, so a mirror takes its product name from the display itself; a preset captured earlier with a placeholder such as “External display 2” picks up the real name the next time that display is connected. AirPlay presets can initiate their saved receiver connection; other displays must already be connected. Display UUIDs can change with some docks, adapters, or macOS updates. DisplayMind saves a monitor’s reported vendor, model and serial number and updates preset, mirror and connection-rule references when that identity uniquely identifies a reconnected monitor. Older presets learn this identity while their saved UUID is connected. Missing serial numbers or ambiguous identities are left unchanged rather than matched by name. USB devices without serial numbers are identified by vendor, product, and port, so moving one to another port requires updating its rule. Display disabling is not offered in the editor; an already disabled display is preserved when captured.
 
 ## Development
 

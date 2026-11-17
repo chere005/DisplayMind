@@ -22,13 +22,15 @@ public struct DisplaySetting: Codable, Equatable, Identifiable {
     public var y: Int
     public var mirrorOf: String?
     public var enabled: Bool
-    public init(id: String, name: String, mode: DisplayMode, rotation: Int = 0, x: Int = 0, y: Int = 0, mirrorOf: String? = nil, enabled: Bool = true) {
+    /// Hardware identity survives a dock assigning a different display UUID; absent in older presets.
+    public var identity: DisplayIdentity?
+    public init(id: String, name: String, mode: DisplayMode, rotation: Int = 0, x: Int = 0, y: Int = 0, mirrorOf: String? = nil, enabled: Bool = true, identity: DisplayIdentity? = nil) {
         self.id = id; self.name = name; self.mode = mode; self.rotation = rotation
-        self.x = x; self.y = y; self.mirrorOf = mirrorOf; self.enabled = enabled
+        self.x = x; self.y = y; self.mirrorOf = mirrorOf; self.enabled = enabled; self.identity = identity
     }
-    /// Equal in everything macOS applies; the display's name is a label only.
+    /// Equal in everything macOS applies; names and hardware identity are metadata.
     public func sameLayout(as other: DisplaySetting) -> Bool {
-        var a = self; a.name = other.name
+        var a = self; a.name = other.name; a.identity = other.identity
         return a == other
     }
 }
@@ -95,9 +97,19 @@ public struct Preset: Codable, Equatable, Identifiable {
     /// The user turned off connecting the receiver for this preset, so it is not turned back on because the preset contains an AirPlay display.
     public var manualAirPlay: Bool?
     public var audio: AudioSelection?
+    public var folderID: UUID?
     public init(id: UUID = UUID(), name: String, displays: [DisplaySetting], confirmed: Bool = false, airPlay: AirPlayDestination? = nil, audio: AudioSelection? = nil) {
         self.id = id; self.name = name; self.displays = displays; self.confirmed = confirmed
         self.airPlay = airPlay; self.audio = audio
+    }
+}
+
+public struct PresetFolder: Codable, Equatable, Identifiable {
+    public var id: UUID
+    public var name: String
+    public var collapsed: Bool
+    public init(id: UUID = UUID(), name: String, collapsed: Bool = false) {
+        self.id = id; self.name = name; self.collapsed = collapsed
     }
 }
 
@@ -128,6 +140,7 @@ public struct AppSettings: Codable, Equatable {
     public var presets: [Preset] = []
     public var rules: [ConnectionRule] = []
     public var automationEnabled = true
+    public var presetFolders: [PresetFolder]?
     public init() {}
 }
 

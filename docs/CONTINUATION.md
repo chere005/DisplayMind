@@ -2,7 +2,7 @@
 
 ## Current state
 
-- DisplayMind 0.11.0 is released and installed. Its Apple-silicon-only DMG and checksum are published on GitHub; the app and image were notarized and stapled. The release lane uses the `DisplayMind` notarytool Keychain profile. `main` was clean and synced at the start of this handoff.
+- DisplayMind's release lane uses the `DisplayMind` notarytool Keychain profile to notarize and staple its Apple-silicon-only app and DMG, publish the image and checksum, and install the update.
 - The Keychain profile `DisplayMind` validated successfully and can notarize local builds. Never record or print the app-specific password.
 - Signed, notarized DMGs and `SHA256SUMS.txt` are in `~/Downloads/Notarized Mac Builds/`:
   - AgentTeam 0.8.0, arm64 and x64.
@@ -20,6 +20,6 @@
 - Apple initially rejected AgentTeam and NoteMind because `codesign --deep` alone left native binaries inside Electron resources unsigned. The successful local copies explicitly signed every embedded Mach-O with a Developer ID identity, hardened runtime and timestamp before signing the containing app, then notarized and stapled both app and DMG. AgentTeam used its existing Electron JIT entitlements. A transient stapler validation failure on the AgentTeam arm64 app succeeded on retry.
 - Temporary scripts and logs under `/tmp/mind-notarize*` are diagnostic scratch files, not a maintained release lane; do not rely on them for future builds. No Windows signing was performed.
 
-## Preflight blocker
+## Preflight
 
-On 2026-11-10 the handoff preflight passed all 105 Swift tests and read-only diagnostics, but `tools/check-watchdog.py` timed out after 10 seconds waiting for its fake-backend watchdog. A focused rerun timed out in the same place. Investigate the independent watchdog smoke test before pushing `main`; no live display settings were changed. The handoff commit remains local until preflight passes.
+The display identity and preset organization update passed all 147 Swift tests, read-only diagnostics, and the independent fake-backend watchdog smoke check on 2026-11-16. The former watchdog timeout is resolved. Builds used a task-local `SDKROOT` from `xcrun --no-cache --sdk macosx --show-sdk-path` because xcrun's cached SDK did not match the selected Xcode; no global Xcode settings changed.
