@@ -1,7 +1,13 @@
+<!-- AgentSuite:reference:begin -->
+Read and follow the shared baseline at `~/GIT/AgentSuite/AGENTS.md` before working here.
+If the checkout is elsewhere, locate `AgentSuite/AGENTS.md` beside this repository's main checkout.
+The shared `dtp` and `tdtp` definitions, authorization, and installed result apply in every project and worktree; local lane details do not redefine them.
+@~/GIT/AgentSuite/AGENTS.md
+<!-- AgentSuite:reference:end -->
+
 # DisplayMind
 
 The baseline for all of Sean's repos lives in ~/GIT/AgentSuite/AGENTS.md and is imported here; this file holds only what is true of THIS repo.
-@../AgentSuite/AGENTS.md
 
 - Native SwiftUI macOS app; keep runtime local and state in `~/Library/Application Support/DisplayMind` (`DataFolder.resolve` moves a 0.4-era `~/DisplayMind` once).
 - Run `tools/preflight.sh` after implementation; it serializes builds with `tools/heavy-lock.sh`.
