@@ -14,7 +14,7 @@ A small native macOS app for display presets and connection-based defaults.
 - Apply a default when selected displays or USB docks/devices are connected or absent.
 - Arrange rule priority; require an exact display set or allow extra displays.
 - An applied preset stays; for 10 seconds a countdown offers Revert. A separate process rolls back an apply that never finishes.
-- Optionally launch at login. Closing the window leaves the menu-bar app running.
+- Optionally launch at login. DisplayMind has a normal Dock icon and a menu-bar item; closing the window leaves it running, and clicking the Dock icon reopens the window.
 
 ## Use
 

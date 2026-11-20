@@ -61,10 +61,8 @@ enum Entry {
 	let updates = UpdateChecker()
 	func applicationDidFinishLaunching(_ notification: Notification) { updates.start() }
 
-	func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
-		sender.setActivationPolicy(.accessory)
-		return false
-	}
+	// A normal Dock app: closing the window leaves DisplayMind running (rules, menu bar) with its Dock icon.
+	func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         NotificationCenter.default.post(name: .openDisplayMind, object: nil)
         return true
@@ -75,13 +73,7 @@ extension Notification.Name { static let openDisplayMind = Notification.Name("Op
 @MainActor enum DisplayMindWindow {
 	static let id = "main"
 
-	static func showMenuBar() {
-		let app = NSApplication.shared
-		if app.activationPolicy() != .regular { app.setActivationPolicy(.regular) }
-	}
-
 	static func open(using openWindow: OpenWindowAction) {
-		showMenuBar()
 		openWindow(id: id)
 		NSApplication.shared.activate(ignoringOtherApps: true)
 	}
@@ -105,7 +97,6 @@ struct WindowContent: View {
     var body: some View {
         MainView(store: store)
             .onAppear {
-				DisplayMindWindow.showMenuBar()
 				store.openWindow = { DisplayMindWindow.open(using: openWindow) }
                 store.refreshAuthorization()
             }
