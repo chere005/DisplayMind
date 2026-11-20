@@ -5,6 +5,12 @@ cd "$(dirname "$0")/.."
 heavy_lock "DisplayMind macOS build"
 MODE="${1:-release}"
 case "$MODE" in release|debug) ;; *) echo 'usage: build.sh [release|debug]' >&2; exit 2 ;; esac
+# Use the selected developer directory's SDK for both compilers. Without an
+# explicit SDK, clang may pick a newer Command Line Tools SDK its linker cannot read.
+if [ -z "${SDKROOT:-}" ]; then
+  SDKROOT=$(xcrun --sdk macosx --show-sdk-path)
+fi
+export SDKROOT
 mkdir -p dist
 # DisplayMind supports Apple silicon; explicitly target arm64 for both binaries.
 xcrun clang -O2 -arch arm64 -mmacosx-version-min=13.0 -Wno-deprecated-declarations -Wno-gnu-folding-constant -I Vendor/displayplacer/src \
