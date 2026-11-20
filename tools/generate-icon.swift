@@ -1,13 +1,13 @@
 import AppKit
 
-// DisplayMind's silver DM follows the MindSuite 96-unit, 9-unit rounded-stroke mark.
+// DisplayMind's silver DM follows the MindSuite 96-unit, 9-unit rounded-stroke mark; its short M is NoteMind's and PlanMind's.
 let directory = URL(fileURLWithPath: CommandLine.arguments[1], isDirectory: true)
 let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
 let assets = root.appendingPathComponent("assets", isDirectory: true)
 try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
 try FileManager.default.createDirectory(at: assets, withIntermediateDirectories: true)
 let silver = NSColor(srgbRed: 192.0/255, green: 192.0/255, blue: 192.0/255, alpha: 1)
-let pathData = "M 14 26 L 14 70 L 24 70 C 50 70 50 26 24 26 L 14 26 M 54 70 L 54 26 L 68 52 L 82 26 L 82 70"
+let pathData = "M 14 26 L 14 70 L 24 70 C 50 70 50 26 24 26 L 14 26 M 58 70 L 58 40 L 68 54 L 78 40 L 78 70"
 for square in [false, true] {
     let svg = """
     <svg xmlns="http://www.w3.org/2000/svg" width="96" height="96" viewBox="0 0 96 96">
@@ -23,8 +23,8 @@ func drawMark(color: NSColor) {
     path.move(to: NSPoint(x: 14, y: 26)); path.line(to: NSPoint(x: 14, y: 70)); path.line(to: NSPoint(x: 24, y: 70))
     path.curve(to: NSPoint(x: 24, y: 26), controlPoint1: NSPoint(x: 50, y: 70), controlPoint2: NSPoint(x: 50, y: 26))
     path.line(to: NSPoint(x: 14, y: 26))
-    path.move(to: NSPoint(x: 54, y: 70)); path.line(to: NSPoint(x: 54, y: 26)); path.line(to: NSPoint(x: 68, y: 52))
-    path.line(to: NSPoint(x: 82, y: 26)); path.line(to: NSPoint(x: 82, y: 70))
+    path.move(to: NSPoint(x: 58, y: 70)); path.line(to: NSPoint(x: 58, y: 40)); path.line(to: NSPoint(x: 68, y: 54))
+    path.line(to: NSPoint(x: 78, y: 40)); path.line(to: NSPoint(x: 78, y: 70))
     path.lineWidth = 9; path.lineCapStyle = .round; path.lineJoinStyle = .round
     color.setStroke(); path.stroke()
 }

@@ -96,4 +96,4 @@ dist/DisplayMind.app/Contents/MacOS/DisplayMind --render-preview /tmp/displaymin
 
 Add `--dark`, `--rules`, `--editor`, `--rule-editor`, `--airplay`, and state flags such as `--pending`, `--empty`, `--unavailable`, `--long` or `--many` (listed at the top of `Sources/DisplayMind/Preview.swift`); `--settings copy.json` renders a copy of real presets, and `--show` opens the same synthetic window on screen. The preview store uses a display helper that only fails, so nothing it does can reach the real displays, and automated tests use fake connection controls and never start or stop a real AirPlay stream.
 
-The mint DM mark uses MindSuite's charcoal tile, rounded 9-unit strokes, 96-unit grid, and compact M joined to the first letter. `tools/generate-icon.swift` shares one path across `assets/logo.svg`, `assets/logo-square.svg`, the PNGs, menu-bar PDF, and app iconset.
+The silver DM mark uses MindSuite's charcoal tile, rounded 9-unit strokes and 96-unit grid, with the short M that NoteMind and PlanMind share. `tools/generate-icon.swift` shares one path across `assets/logo.svg`, `assets/logo-square.svg`, the PNGs, menu-bar PDF, and app iconset.
