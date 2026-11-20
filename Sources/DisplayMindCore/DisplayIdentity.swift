@@ -5,7 +5,9 @@ public struct DisplayIdentity: Codable, Equatable, Hashable {
     public var vendor: UInt32
     public var model: UInt32
     public var serial: UInt32
-    public var isUsable: Bool { vendor != 0 && model != 0 && serial != 0 }
+    /// A serial is best, but some displays (including pen displays) report zero. In that case
+    /// vendor + model can still identify a display when it is the only one of that model.
+    public var isUsable: Bool { vendor != 0 && model != 0 }
     public init(vendor: UInt32, model: UInt32, serial: UInt32) {
         self.vendor = vendor; self.model = model; self.serial = serial
     }
@@ -33,7 +35,8 @@ public enum DisplayReconciliation {
         }
     }
 
-    /// Exact UUIDs take precedence. A missing UUID is replaced only by a unique full hardware tuple.
+    /// Exact UUIDs take precedence. A missing UUID is replaced by a unique hardware identity;
+    /// identities without a serial are matched only when that vendor/model is unique on both sides.
     /// Repeated/contradictory identities and references that would merge two displays are left unchanged.
     public static func mapping(settings: AppSettings, connected: [ConnectedDisplay], excluded: Set<String> = []) -> [String: String] {
         let excluded = excludedIDs(settings, excluded)
@@ -47,10 +50,25 @@ public enum DisplayReconciliation {
             return (id, identity)
         }
         let sources = Dictionary(grouping: usableStored, by: { $0.1 })
+        let storedByModel = Dictionary(grouping: usableStored, by: { DisplayModel(vendor: $0.1.vendor, model: $0.1.model) })
+        let connectedByModel = Dictionary(grouping: unique.filter { $0.setting.identity?.isUsable == true }) {
+            DisplayModel(vendor: $0.setting.identity!.vendor, model: $0.setting.identity!.model)
+        }
         var result: [String: String] = [:]
         for (oldID, identity) in usableStored {
-            guard !online.contains(oldID), sources[identity]?.count == 1,
-                  let candidates = byIdentity[identity], candidates.count == 1, let candidate = candidates.first,
+            guard !online.contains(oldID) else { continue }
+            let candidate: ConnectedDisplay?
+            if identity.serial != 0 {
+                guard sources[identity]?.count == 1,
+                      let candidates = byIdentity[identity], candidates.count == 1 else { continue }
+                candidate = candidates.first
+            } else {
+                let model = DisplayModel(vendor: identity.vendor, model: identity.model)
+                guard storedByModel[model]?.count == 1,
+                      let candidates = connectedByModel[model], candidates.count == 1 else { continue }
+                candidate = candidates.first
+            }
+            guard let candidate,
                   (stored[candidate.id] ?? []).allSatisfy({ $0 == identity }) else { continue }
             result[oldID] = candidate.id
         }
@@ -117,4 +135,9 @@ public enum DisplayReconciliation {
         }
         return result
     }
+}
+
+private struct DisplayModel: Hashable {
+    let vendor: UInt32
+    let model: UInt32
 }

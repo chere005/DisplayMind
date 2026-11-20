@@ -7,6 +7,7 @@ import ServiceManagement
     @Published var settings = AppSettings()
     @Published var displays: [ConnectedDisplay] = []
     @Published var devices: [Device] = []
+    @Published var refreshingDisplays = false
     @Published var busy = false
     @Published var error: String?
     @Published var status = "Reading connected displays…"
@@ -275,20 +276,65 @@ import ServiceManagement
         guard !busy, pending == nil, recoveryID == nil else { return }
         displayReadGeneration += 1
         let generation = displayReadGeneration
-        do {
-            let backend = self.backend
-            let current = try await Task.detached { try backend.read() }.value
-            guard generation == displayReadGeneration else { return }
-            displays = hardware.nameDisplays(current)
-            airPlayOnline = hardware.airPlayDisplays()
-            reconcileDisplayIdentities()
-            adoptDisplayNames()
-            adoptAirPlay()
-            if pending == nil && !busy && !recoveryUnacknowledged { status = idleStatus }
-        } catch {
-            guard generation == displayReadGeneration else { return }
+        refreshingDisplays = true
+        defer { if generation == displayReadGeneration { refreshingDisplays = false } }
+
+        let backend = self.backend
+        let hardware = self.hardware
+        let displayRead = Task.detached { Result { try backend.read() } }
+        let deviceRead = Task.detached { hardware.devices() }
+        let airPlayRead = Task.detached { hardware.airPlayDisplays() }
+        let (displayResult, foundDevices, onlineAirPlay) = await (displayRead.value, deviceRead.value, airPlayRead.value)
+        guard generation == displayReadGeneration else { return }
+
+        let currentDisplays: [ConnectedDisplay]
+        switch displayResult {
+        case .success(let current):
+            currentDisplays = hardware.nameDisplays(current)
+            displays = currentDisplays
+        case .failure(let error):
+            currentDisplays = displays
+            devices = Self.namingDisplaysInDevices(foundDevices, displays: currentDisplays)
             report(error)
+            return
         }
+
+        devices = Self.namingDisplaysInDevices(foundDevices, displays: currentDisplays)
+        airPlayOnline = onlineAirPlay
+        reconcileDisplayIdentities()
+        adoptDisplayNames()
+        adoptAirPlay()
+        if pending == nil && !busy && !recoveryUnacknowledged {
+            if scheduling, let warning = Self.displayInventoryWarning(devices: devices, displays: currentDisplays) {
+                status = warning
+            } else {
+                status = idleStatus
+            }
+        }
+    }
+
+    private static func namingDisplaysInDevices(_ devices: [Device], displays: [ConnectedDisplay]) -> [Device] {
+        devices.map { device in
+            var copy = device
+            if device.kind == .display,
+               let display = displays.first(where: { "display:\($0.id)" == device.id }) {
+                copy.name = display.setting.name
+            }
+            return copy
+        }
+    }
+
+    private static func displayInventoryWarning(devices: [Device], displays: [ConnectedDisplay]) -> String? {
+        let systemIDs = Set(devices.filter { $0.kind == .display }.map { String($0.id.dropFirst("display:".count)) })
+        let readerIDs = Set(displays.map(\.id))
+        guard systemIDs != readerIDs else { return nil }
+        func describe(_ ids: Set<String>, source: String) -> String {
+            let names = ids.sorted().map { id in
+                devices.first(where: { $0.id == "display:\(id)" })?.name ?? String(id.prefix(8))
+            }
+            return "\(source): " + (names.isEmpty ? "none" : names.joined(separator: ", "))
+        }
+        return "Display detection mismatch — \(describe(systemIDs, source: "macOS")); \(describe(readerIDs, source: "layout reader"))."
     }
     func capture() async {
         guard canEditSavedSettings, !airPlayScanning, editorPreset == nil, editorRule == nil else { return }
@@ -579,11 +625,7 @@ import ServiceManagement
         defer { polling = false }
         let devicesNow = hardware.devices
         let found = await Task.detached { devicesNow() }.value
-        devices = found.map { device in
-            var copy = device
-            if device.kind == .display, let display = displays.first(where: { "display:\($0.id)" == device.id }) { copy.name = display.setting.name }
-            return copy
-        }
+        devices = Self.namingDisplaysInDevices(found, displays: displays)
         let ids = Set(devices.map(\.id))
         if ids != lastDevices || layoutStale { lastDevices = ids; layoutStale = false; await refresh() }
         let due = gate.shouldEvaluate(devices, now: Date(), settle: settle)

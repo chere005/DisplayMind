@@ -30,6 +30,13 @@ final class FakeAudio: @unchecked Sendable {
     }
 }
 
+final class FakeDeviceInventory: @unchecked Sendable {
+    private let lock = NSLock()
+    private var current: [Device] = []
+    func set(_ devices: [Device]) { lock.lock(); current = devices; lock.unlock() }
+    func read() -> [Device] { lock.lock(); defer { lock.unlock() }; return current }
+}
+
 /// Drives `Store` against a fake displayplacer in a temp directory and an in-process stand-in for the watchdog process.
 final class StoreTests: XCTestCase {
     final class Posts { var items: [String] = [] }
@@ -74,9 +81,9 @@ final class StoreTests: XCTestCase {
         var s = AppSettings(); s.presets = presets; s.rules = rules
         try SettingsFile(directory: data).save(s)
     }
-    @MainActor func makeStore(_ backend: DisplayBackend, devices: [Device] = [], windowVisible: Bool = false) -> Store {
+    @MainActor func makeStore(_ backend: DisplayBackend, devices: [Device] = [], inventory: FakeDeviceInventory? = nil, windowVisible: Bool = false) -> Store {
         let ids = Set(devices.map { String($0.id.dropFirst("display:".count)) })
-        let hardware = HardwareProvider(devices: { devices }, connectedDisplayIDs: { ids }, nameDisplays: { $0 })
+        let hardware = HardwareProvider(devices: { inventory?.read() ?? devices }, connectedDisplayIDs: { ids }, nameDisplays: { $0 })
         let airPlay = AirPlayActions(authorized: { true }, requireAccess: {}, requestAccess: {}, receivers: { [] },
                                      setConnected: { _, _, _ in XCTFail("AirPlay must not be touched") })
         let posts = self.posts, sound = self.sound
@@ -87,6 +94,22 @@ final class StoreTests: XCTestCase {
                           }, windowVisible: { windowVisible }, background: false)
         store.settle = 0
         return store
+    }
+
+    @MainActor func testRefreshUpdatesConnectedDisplaysAndUSBInventoryTogether() async throws {
+        let backend = try backend(current: previous)
+        let inventory = FakeDeviceInventory()
+        let store = makeStore(backend, inventory: inventory)
+        let wacom = Device(id: "usb:wacom", name: "Wacom One", kind: .usb)
+        inventory.set([Device(id: "display:\(displayB)", name: "External display", kind: .display), wacom])
+
+        await store.refresh()
+
+        XCTAssertEqual(store.devices.first(where: { $0.id == wacom.id }), wacom)
+        XCTAssertEqual(store.devices.first(where: { $0.id == "display:\(displayB)" })?.name,
+                       store.displays.first(where: { $0.id == displayB })?.setting.name)
+        XCTAssertEqual(Set(store.displays.map(\.id)), Set(previous.map(\.id)))
+        XCTAssertFalse(store.refreshingDisplays)
     }
     @MainActor func tickUntil(_ store: Store, timeout: TimeInterval = 10, _ done: () -> Bool) async {
         let end = Date().addingTimeInterval(timeout)

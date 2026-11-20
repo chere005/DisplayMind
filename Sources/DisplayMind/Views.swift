@@ -523,13 +523,23 @@ struct MainView: View {
 
     private var statusBar: some View {
         HStack(spacing: 10) {
-            Circle().fill(store.status == Store.attention ? Color.red : locked ? Color.orange : Branding.text).frame(width: 7, height: 7)
+            Circle().fill(store.status == Store.attention ? Color.red : (locked || store.status.hasPrefix("Display detection mismatch") ? Color.orange : Branding.text)).frame(width: 7, height: 7)
             Text(store.status).font(.callout).foregroundStyle(.secondary).lineLimit(2).help(store.status)
             Spacer(minLength: 12)
             IconButton(symbol: "gearshape", help: "Open macOS Display Settings") {
                 NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.Displays-Settings.extension")!)
             }
-            IconButton(symbol: "arrow.clockwise", help: "Read the displays again") { Task { await store.refresh() } }.disabled(locked)
+            Button { Task { await store.refresh() } } label: {
+                HStack(spacing: 6) {
+                    if store.refreshingDisplays { ProgressView().controlSize(.small) }
+                    else { Image(systemName: "arrow.clockwise") }
+                    Text(store.refreshingDisplays ? "Refreshing…" : "Refresh Displays")
+                }
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .disabled(store.busy || store.pending != nil || store.refreshingDisplays)
+            .help("Re-read connected displays and devices from macOS")
         }.padding(.leading, 28).padding(.trailing, 20).frame(minHeight: 44)
     }
 

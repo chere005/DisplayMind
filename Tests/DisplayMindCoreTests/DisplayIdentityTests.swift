@@ -43,6 +43,23 @@ final class DisplayIdentityTests: XCTestCase {
         XCTAssertNil(Configuration.availability(updated.presets[0], connected: [new]))
     }
 
+    func testChangedUUIDRebindsUniqueDisplayWithoutReportedSerial() {
+        let noSerial = DisplayIdentity(vendor: 100, model: 200, serial: 0)
+        let saved = settings([display(old, identity: noSerial)])
+        let updated = DisplayReconciliation.reconcile(settings: saved, connected: [connected(display(new, identity: noSerial))])
+        XCTAssertEqual(updated.presets[0].displays[0].id, new)
+        XCTAssertNil(Configuration.availability(updated.presets[0], connected: [new]))
+    }
+
+    func testChangedUUIDDoesNotGuessBetweenSameModelDisplaysWithoutSerial() {
+        let noSerial = DisplayIdentity(vendor: 100, model: 200, serial: 0)
+        var second = display(other, identity: noSerial); second.x = 1920
+        let saved = settings([display(old, identity: noSerial), second])
+        let live = [connected(display(new, identity: noSerial)), connected(display(later, identity: noSerial))]
+        XCTAssertTrue(DisplayReconciliation.mapping(settings: saved, connected: live).isEmpty)
+        XCTAssertEqual(DisplayReconciliation.reconcile(settings: saved, connected: live), saved)
+    }
+
     func testSameModelMonitorsAreDistinguishedBySerial() {
         let left = DisplayIdentity(vendor: 10, model: 20, serial: 1)
         let right = DisplayIdentity(vendor: 10, model: 20, serial: 2)
@@ -86,11 +103,12 @@ final class DisplayIdentityTests: XCTestCase {
         }
     }
 
-    func testZeroHardwareIdentifiersAndConflictingStoredIdentitiesAreRefused() {
-        for identity in [DisplayIdentity(vendor: 0, model: 200, serial: 300), DisplayIdentity(vendor: 100, model: 0, serial: 300), DisplayIdentity(vendor: 100, model: 200, serial: 0)] {
+    func testMissingVendorOrModelAndConflictingStoredIdentitiesAreRefused() {
+        for identity in [DisplayIdentity(vendor: 0, model: 200, serial: 300), DisplayIdentity(vendor: 100, model: 0, serial: 300)] {
             XCTAssertFalse(identity.isUsable)
             XCTAssertTrue(DisplayReconciliation.mapping(settings: settings([display(old, identity: identity)]), connected: [connected(display(new, identity: identity))]).isEmpty)
         }
+        XCTAssertTrue(DisplayIdentity(vendor: 100, model: 200, serial: 0).isUsable)
         var saved = settings([display(old, identity: wacom)])
         saved.presets.append(Preset(name: "Other", displays: [display(old, identity: DisplayIdentity(vendor: 1, model: 2, serial: 3))]))
         XCTAssertTrue(DisplayReconciliation.mapping(settings: saved, connected: [connected(display(new, identity: wacom))]).isEmpty)
