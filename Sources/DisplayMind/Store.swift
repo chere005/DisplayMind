@@ -168,6 +168,8 @@ import ServiceManagement
     var identityUpdatesAllowed: Bool { writable && pending == nil && recoveryID == nil }
     /// Editors and commands share the same lock while a display change is applying, reverting, or awaiting Keep.
     var canEditSavedSettings: Bool { writable && !busy && pending == nil && recoveryID == nil }
+	var canStartLayoutCommand: Bool { canEditSavedSettings && !airPlayScanning && editorPreset == nil && editorRule == nil }
+	var canRefreshDisplays: Bool { !busy && pending == nil && recoveryID == nil && !refreshingDisplays }
     var selectedPreset: Preset? { settings.presets.first { $0.id == selectedPresetID } }
     var knownDevices: [Device] {
         let stored = settings.rules.flatMap { $0.requiredDevices + $0.absentDevices }
@@ -337,8 +339,9 @@ import ServiceManagement
         return "Display detection mismatch — \(describe(systemIDs, source: "macOS")); \(describe(readerIDs, source: "layout reader"))."
     }
     func capture() async {
-        guard canEditSavedSettings, !airPlayScanning, editorPreset == nil, editorRule == nil else { return }
+        guard canStartLayoutCommand else { return }
         displayReadGeneration += 1
+		refreshingDisplays = false
         busy = true
         defer { busy = false }
         do {
@@ -484,6 +487,7 @@ import ServiceManagement
     func apply(_ requested: Preset, automatic: Bool = false) async {
         guard !busy, !airPlayScanning, pending == nil else { return }
         displayReadGeneration += 1
+		refreshingDisplays = false
         var preset = currentPresetReferences(requested)
         busy = true
         applyFailure = nil

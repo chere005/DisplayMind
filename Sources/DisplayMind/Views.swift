@@ -538,7 +538,7 @@ struct MainView: View {
             }
             .buttonStyle(.bordered)
             .controlSize(.small)
-            .disabled(store.busy || store.pending != nil || store.refreshingDisplays)
+            .disabled(!store.canRefreshDisplays)
             .help("Re-read connected displays and devices from macOS")
         }.padding(.leading, 28).padding(.trailing, 20).frame(minHeight: 44)
     }

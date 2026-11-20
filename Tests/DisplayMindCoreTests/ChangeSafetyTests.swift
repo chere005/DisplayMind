@@ -167,6 +167,7 @@ extension StoreTests {
         XCTAssertEqual(store.displays, applied)
         store.keep()
         XCTAssertTrue(store.settings.presets[0].confirmed)
+		XCTAssertTrue(store.canRefreshDisplays)
     }
 
     @MainActor func testCaptureSupersedesAnOlderRefresh() async throws {
@@ -186,6 +187,7 @@ extension StoreTests {
         gate.release.signal()
         await older.value
         XCTAssertEqual(store.displays, captured)
+		XCTAssertTrue(store.canRefreshDisplays)
         XCTAssertEqual(applyCalls(), 0)
     }
 

@@ -61,7 +61,10 @@ enum Entry {
 	let updates = UpdateChecker()
 	func applicationDidFinishLaunching(_ notification: Notification) { updates.start() }
 
-    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
+	func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+		sender.setActivationPolicy(.accessory)
+		return false
+	}
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         NotificationCenter.default.post(name: .openDisplayMind, object: nil)
         return true
@@ -69,13 +72,29 @@ enum Entry {
 }
 extension Notification.Name { static let openDisplayMind = Notification.Name("OpenDisplayMind") }
 
+@MainActor enum DisplayMindWindow {
+	static let id = "main"
+
+	static func showMenuBar() {
+		let app = NSApplication.shared
+		if app.activationPolicy() != .regular { app.setActivationPolicy(.regular) }
+	}
+
+	static func open(using openWindow: OpenWindowAction) {
+		showMenuBar()
+		openWindow(id: id)
+		NSApplication.shared.activate(ignoringOtherApps: true)
+	}
+}
+
 struct DisplayMindApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var delegate
     @StateObject private var store = Store()
     var body: some Scene {
-        Window("DisplayMind", id: "main") {
+        Window("DisplayMind", id: DisplayMindWindow.id) {
             WindowContent(store: store)
         }.defaultSize(width: 1080, height: 760).windowResizability(.contentMinSize)
+		.commands { DisplayMindCommands(store: store, updates: delegate.updates) }
         MenuBarExtra { MenuContent(store: store, updates: delegate.updates) } label: { Image(nsImage: Branding.menuIcon).accessibilityLabel("DisplayMind") }
     }
 }
@@ -86,7 +105,8 @@ struct WindowContent: View {
     var body: some View {
         MainView(store: store)
             .onAppear {
-                store.openWindow = { openWindow(id: "main"); NSApplication.shared.activate(ignoringOtherApps: true) }
+				DisplayMindWindow.showMenuBar()
+				store.openWindow = { DisplayMindWindow.open(using: openWindow) }
                 store.refreshAuthorization()
             }
             .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in store.refreshAuthorization() }
@@ -97,9 +117,6 @@ struct MenuContent: View {
     @ObservedObject var store: Store
 	@ObservedObject var updates: UpdateChecker
     @Environment(\.openWindow) private var openWindow
-    private var changeUnavailable: Bool {
-        !store.canEditSavedSettings || store.airPlayScanning || store.editorPreset != nil || store.editorRule != nil
-    }
     var body: some View {
         Text(store.status)
         if let message = store.menuError {
@@ -107,32 +124,12 @@ struct MenuContent: View {
             Button("Dismiss error", action: store.dismissMenuError)
         }
         Divider()
-        if store.pending != nil {
-            Button("Revert (\(store.secondsRemaining)s left)", action: store.revert)
-            Button("Keep now", action: store.keep)
-            Divider()
-        }
-        ForEach(store.settings.presets) { preset in
-            Button { Task { await store.apply(preset) } } label: {
-                if store.isActive(preset) { Label(preset.name, systemImage: "checkmark") } else { Text(preset.name) }
-            }.disabled(changeUnavailable || store.unavailable(preset) != nil)
-        }
-        if store.settings.presets.isEmpty { Text("No presets yet") }
-        Divider()
-        Toggle("Automatic switching", isOn: Binding(get: { store.settings.automationEnabled }, set: store.toggleAutomation))
-        Button("Open DisplayMind…") { openWindow(id: "main"); NSApplication.shared.activate(ignoringOtherApps: true) }
-        Button("Capture current layout…") {
-            openWindow(id: "main"); NSApplication.shared.activate(ignoringOtherApps: true)
-            Task { await store.capture() }
-        }.disabled(changeUnavailable)
-        Divider()
-		if let update = updates.available {
-			Button("Download DisplayMind \(update.version)") { NSWorkspace.shared.open(update.downloadURL) }
-		}
-		Button(updates.checking ? "Checking for Updates…" : "Check for Updates…") {
-			Task { await updates.check(manual: true) }
-		}.disabled(updates.checking)
+		PresetMenuItems(store: store)
+		Button("Open DisplayMind…") { DisplayMindWindow.open(using: openWindow) }
+		CaptureLayoutMenuItem(store: store)
 		Divider()
-        Button("Quit DisplayMind") { NSApplication.shared.terminate(nil) }.keyboardShortcut("q")
+		UpdateMenuItems(updates: updates)
+		Divider()
+        Button("Quit DisplayMind") { NSApplication.shared.terminate(nil) }
     }
 }
