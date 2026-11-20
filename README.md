@@ -50,6 +50,8 @@ A preset saves the Mac's default sound output and input when captured; the edito
 
 A release made on a Mac that can notarize carries `DisplayMind-<version>.dmg` on the [Releases](https://github.com/chere005/DisplayMind/releases) page: open it and drag DisplayMind to Applications. The image and the app are Developer ID signed, notarized by Apple and stapled, and run on Apple silicon Macs with macOS 13 or later. Releases without an image are tags only; build those from source.
 
+DisplayMind checks GitHub on launch and daily while running. When a newer disk image is available, the DisplayMind menu offers a download and macOS can notify you once per version. Choose **Check for Updates…** in that menu to check on demand. The download opens in your browser, and you install it from the disk image. A private repository requires an authenticated GitHub CLI on the Mac for the check and a GitHub login in the browser for the download.
+
 ## Build
 
 Requires macOS 13 or later and Xcode with Swift 5.9 or later. Builds target Apple silicon with a macOS 13 deployment target. No downloaded packages, Homebrew, or network access are needed for building after cloning.

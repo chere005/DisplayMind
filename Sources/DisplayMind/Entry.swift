@@ -57,7 +57,10 @@ enum Entry {
     }
 }
 
-final class AppDelegate: NSObject, NSApplicationDelegate {
+@MainActor final class AppDelegate: NSObject, NSApplicationDelegate {
+	let updates = UpdateChecker()
+	func applicationDidFinishLaunching(_ notification: Notification) { updates.start() }
+
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         NotificationCenter.default.post(name: .openDisplayMind, object: nil)
@@ -73,7 +76,7 @@ struct DisplayMindApp: App {
         Window("DisplayMind", id: "main") {
             WindowContent(store: store)
         }.defaultSize(width: 1080, height: 760).windowResizability(.contentMinSize)
-        MenuBarExtra { MenuContent(store: store) } label: { Image(nsImage: Branding.menuIcon).accessibilityLabel("DisplayMind") }
+        MenuBarExtra { MenuContent(store: store, updates: delegate.updates) } label: { Image(nsImage: Branding.menuIcon).accessibilityLabel("DisplayMind") }
     }
 }
 
@@ -92,6 +95,7 @@ struct WindowContent: View {
 }
 struct MenuContent: View {
     @ObservedObject var store: Store
+	@ObservedObject var updates: UpdateChecker
     @Environment(\.openWindow) private var openWindow
     private var changeUnavailable: Bool {
         !store.canEditSavedSettings || store.airPlayScanning || store.editorPreset != nil || store.editorRule != nil
@@ -122,6 +126,13 @@ struct MenuContent: View {
             Task { await store.capture() }
         }.disabled(changeUnavailable)
         Divider()
+		if let update = updates.available {
+			Button("Download DisplayMind \(update.version)") { NSWorkspace.shared.open(update.downloadURL) }
+		}
+		Button(updates.checking ? "Checking for Updates…" : "Check for Updates…") {
+			Task { await updates.check(manual: true) }
+		}.disabled(updates.checking)
+		Divider()
         Button("Quit DisplayMind") { NSApplication.shared.terminate(nil) }.keyboardShortcut("q")
     }
 }
