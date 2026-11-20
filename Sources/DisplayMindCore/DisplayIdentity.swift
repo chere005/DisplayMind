@@ -37,6 +37,8 @@ public enum DisplayReconciliation {
 
     /// Exact UUIDs take precedence. A missing UUID is replaced by a unique hardware identity;
     /// identities without a serial are matched only when that vendor/model is unique on both sides.
+    /// A display whose model number changed (a Wacom One 12 reports two) is still the same when its vendor,
+    /// serial number and real name all agree and it is the only such display saved and connected.
     /// Repeated/contradictory identities and references that would merge two displays are left unchanged.
     public static func mapping(settings: AppSettings, connected: [ConnectedDisplay], excluded: Set<String> = []) -> [String: String] {
         let excluded = excludedIDs(settings, excluded)
@@ -54,14 +56,30 @@ public enum DisplayReconciliation {
         let connectedByModel = Dictionary(grouping: unique.filter { $0.setting.identity?.isUsable == true }) {
             DisplayModel(vendor: $0.setting.identity!.vendor, model: $0.setting.identity!.model)
         }
+        let connectedByPhysical = Dictionary(grouping: unique.filter { $0.setting.identity?.isUsable == true && $0.setting.identity?.serial != 0 }) {
+            PhysicalDisplay($0.setting.identity!)
+        }
+        let savedNames = Dictionary(grouping: settings.presets.flatMap(\.displays), by: \.id).mapValues { Set($0.map { normalized($0.name) }) }
         var result: [String: String] = [:]
         for (oldID, identity) in usableStored {
             guard !online.contains(oldID) else { continue }
             let candidate: ConnectedDisplay?
+            var sameDisplay: (DisplayIdentity) -> Bool = { $0 == identity }
             if identity.serial != 0 {
-                guard sources[identity]?.count == 1,
-                      let candidates = byIdentity[identity], candidates.count == 1 else { continue }
-                candidate = candidates.first
+                if let exact = byIdentity[identity] {
+                    guard sources[identity]?.count == 1, exact.count == 1 else { continue }
+                    candidate = exact.first
+                } else {
+                    // The same physical display reporting another model number.
+                    let physical = PhysicalDisplay(identity)
+                    let missing = usableStored.filter { !online.contains($0.0) && PhysicalDisplay($0.1) == physical }
+                    guard missing.count == 1,
+                          let candidates = connectedByPhysical[physical], candidates.count == 1,
+                          let live = candidates.first, !DisplayParser.isPlaceholder(live.setting.name),
+                          savedNames[oldID]?.contains(normalized(live.setting.name)) == true else { continue }
+                    sameDisplay = { PhysicalDisplay($0) == physical }
+                    candidate = live
+                }
             } else {
                 let model = DisplayModel(vendor: identity.vendor, model: identity.model)
                 guard storedByModel[model]?.count == 1,
@@ -69,7 +87,7 @@ public enum DisplayReconciliation {
                 candidate = candidates.first
             }
             guard let candidate,
-                  (stored[candidate.id] ?? []).allSatisfy({ $0 == identity }) else { continue }
+                  (stored[candidate.id] ?? []).allSatisfy(sameDisplay) else { continue }
             result[oldID] = candidate.id
         }
 
@@ -123,14 +141,21 @@ public enum DisplayReconciliation {
         result.presets = result.presets.map { remap(preset: $0, using: aliases) }
         result.rules = result.rules.map { remap(rule: $0, using: aliases) }
         let stored = storedIdentities(result)
+        let savedNames = Dictionary(grouping: result.presets.flatMap(\.displays), by: \.id).mapValues { Set($0.map { normalized($0.name) }) }
         for p in result.presets.indices {
             for d in result.presets[p].displays.indices {
                 let saved = result.presets[p].displays[d]
-                guard saved.identity == nil, !excluded.contains(saved.id),
+                guard !excluded.contains(saved.id),
                       let matches = current[saved.id], matches.count == 1,
-                      let identity = matches.first?.setting.identity, identity.isUsable,
-                      (stored[saved.id] ?? []).allSatisfy({ $0 == identity }) else { continue }
-                result.presets[p].displays[d].identity = identity
+                      let identity = matches.first?.setting.identity, identity.isUsable else { continue }
+                if saved.identity == nil {
+                    guard (stored[saved.id] ?? []).allSatisfy({ $0 == identity }) else { continue }
+                    result.presets[p].displays[d].identity = identity
+                } else if let old = saved.identity, old != identity, identity.serial != 0, PhysicalDisplay(old) == PhysicalDisplay(identity),
+                          !DisplayParser.isPlaceholder(matches[0].setting.name), savedNames[saved.id]?.contains(normalized(matches[0].setting.name)) == true {
+                    // The model number changed under the same serial: keep the newest so a later UUID change still matches.
+                    result.presets[p].displays[d].identity = identity
+                }
             }
         }
         return result
@@ -141,3 +166,12 @@ private struct DisplayModel: Hashable {
     let vendor: UInt32
     let model: UInt32
 }
+
+/// What stays the same when a display reports another model number: its vendor and serial number.
+private struct PhysicalDisplay: Hashable {
+    let vendor: UInt32
+    let serial: UInt32
+    init(_ identity: DisplayIdentity) { vendor = identity.vendor; serial = identity.serial }
+}
+
+private func normalized(_ name: String) -> String { name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }

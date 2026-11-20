@@ -71,11 +71,52 @@ final class DisplayIdentityTests: XCTestCase {
 
     func testMatchingOnlySerialOrOnlyNameCannotRebind() {
         let saved = settings([display(old, identity: wacom)])
-        for wrong in [DisplayIdentity(vendor: 101, model: 200, serial: 300), DisplayIdentity(vendor: 100, model: 201, serial: 300)] {
+        for wrong in [DisplayIdentity(vendor: 101, model: 200, serial: 300), DisplayIdentity(vendor: 100, model: 200, serial: 301)] {
             XCTAssertTrue(DisplayReconciliation.mapping(settings: saved, connected: [connected(display(new, identity: wrong))]).isEmpty)
         }
+        // Another model number under the same vendor and serial is the same display only when the name agrees too.
+        XCTAssertTrue(DisplayReconciliation.mapping(settings: saved, connected: [connected(display(new, identity: DisplayIdentity(vendor: 100, model: 201, serial: 300), name: "Other display"))]).isEmpty)
         let legacy = settings([display(old)])
         XCTAssertEqual(DisplayReconciliation.reconcile(settings: legacy, connected: [connected(display(new, identity: wacom))]), legacy, "a name alone is not hardware identity")
+    }
+
+    /// Sean's Wacom One 12: the same unit and serial number reported model 4232, later 4224, each under its own UUID.
+    func testModelNumberChangeKeepsTheSameVendorSerialAndNameRebound() {
+        let before = DisplayIdentity(vendor: 23587, model: 4232, serial: 539100691)
+        let after = DisplayIdentity(vendor: 23587, model: 4224, serial: 539100691)
+        var saved = settings([display(old, identity: before, name: "Wacom One 12")])
+        saved.presets.append(Preset(name: "Other", displays: [display(old, identity: before, name: "Wacom One 12"), display(other, identity: DisplayIdentity(vendor: 1, model: 2, serial: 3), name: "LG")]))
+        saved.presets.append(Preset(name: "Seen later", displays: [display(new, identity: after, name: "Wacom One 12")]))
+        let live = [connected(display(new, identity: after, name: "Wacom One 12")), connected(display(other, identity: DisplayIdentity(vendor: 1, model: 2, serial: 3), name: "LG"))]
+        XCTAssertEqual(DisplayReconciliation.mapping(settings: saved, connected: live), [old: new])
+        let updated = DisplayReconciliation.reconcile(settings: saved, connected: live)
+        XCTAssertEqual(updated.presets.flatMap(\.displays).filter { $0.name == "Wacom One 12" }.map(\.id), [new, new, new])
+        XCTAssertEqual(Set(updated.presets.flatMap(\.displays).compactMap(\.identity)).filter { $0.vendor == 23587 }, [after], "the saved model follows the display")
+        XCTAssertTrue(updated.presets.allSatisfy { Configuration.availability($0, connected: [new, other]) == nil })
+        // It can flip back: the refreshed identity still finds it under yet another UUID and model.
+        let flipped = [connected(display(later, identity: before, name: "Wacom One 12")), live[1]]
+        XCTAssertEqual(DisplayReconciliation.mapping(settings: updated, connected: flipped), [new: later])
+        XCTAssertEqual(DisplayReconciliation.reconcile(settings: updated, connected: live), updated, "nothing more to change once reconciled")
+    }
+
+    func testModelNumberChangeIsRefusedWhenItCouldBeAnotherDisplay() {
+        let before = DisplayIdentity(vendor: 23587, model: 4232, serial: 539100691)
+        let after = DisplayIdentity(vendor: 23587, model: 4224, serial: 539100691)
+        let saved = settings([display(old, identity: before, name: "Wacom One 12")])
+        // A placeholder name carries no evidence; neither does a different name.
+        for name in ["External display 2", "Cintiq 16"] {
+            XCTAssertTrue(DisplayReconciliation.mapping(settings: saved, connected: [connected(display(new, identity: after, name: name))]).isEmpty, name)
+        }
+        let placeholder = settings([display(old, identity: before, name: "External display 2")])
+        XCTAssertTrue(DisplayReconciliation.mapping(settings: placeholder, connected: [connected(display(new, identity: after, name: "External display 2"))]).isEmpty)
+        // Two connected displays with the vendor and serial, or two missing saved ones, cannot be told apart.
+        XCTAssertTrue(DisplayReconciliation.mapping(settings: saved, connected: [connected(display(new, identity: after, name: "Wacom One 12")), connected(display(later, identity: DisplayIdentity(vendor: 23587, model: 4300, serial: 539100691), name: "Wacom One 12"))]).isEmpty)
+        var second = display(other, identity: DisplayIdentity(vendor: 23587, model: 4300, serial: 539100691), name: "Wacom One 12"); second.x = 1920
+        let twoSaved = settings([display(old, identity: before, name: "Wacom One 12"), second])
+        XCTAssertTrue(DisplayReconciliation.mapping(settings: twoSaved, connected: [connected(display(new, identity: after, name: "Wacom One 12"))]).isEmpty)
+        // No serial number: a model change is never matched.
+        let noSerial = settings([display(old, identity: DisplayIdentity(vendor: 23587, model: 4232, serial: 0), name: "Wacom One 12")])
+        XCTAssertTrue(DisplayReconciliation.mapping(settings: noSerial, connected: [connected(display(new, identity: DisplayIdentity(vendor: 23587, model: 4224, serial: 0), name: "Wacom One 12"))]).isEmpty)
     }
 
     func testDuplicateConnectedIdentityAndDuplicateUUIDAreRefused() {
