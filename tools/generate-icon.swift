@@ -6,15 +6,16 @@ let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingL
 let assets = root.appendingPathComponent("assets", isDirectory: true)
 try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
 try FileManager.default.createDirectory(at: assets, withIntermediateDirectories: true)
-// Shiny silver (Sean, 2026-11-21): a vertical chrome gradient over the whole mark, lit from the top with
-// a darker horizon band just below the middle. Offsets run from y 22 to y 74, the stroked mark's extent.
-let chrome: [(offset: CGFloat, hex: String)] = [(0, "ffffff"), (0.38, "d4d8dd"), (0.52, "8a9099"), (0.62, "b9bec5"), (0.85, "eef0f3"), (1, "a3a8b0")]
+// Shiny silver (Sean, 2026-11-21): a soft vertical sheen over the whole mark, lit from the top with a gentle
+// shade just below the middle. 0.21.0's hard chrome band was "too aggressive"; keep the contrast this low.
+// Offsets run from y 22 to y 74, the stroked mark's extent.
+let chrome: [(offset: CGFloat, hex: String)] = [(0, "eef0f2"), (0.45, "d0d3d7"), (0.58, "b8bcc1"), (0.72, "c9ccd0"), (1, "dadde0")]
 let pathData = "M 14 26 L 14 70 L 24 70 C 50 70 50 26 24 26 L 14 26 M 58 70 L 58 40 L 68 54 L 78 40 L 78 70"
 let svgStops = chrome.map { "<stop offset=\"\($0.offset)\" stop-color=\"#\($0.hex)\"/>" }.joined()
 for square in [false, true] {
     let svg = """
     <svg xmlns="http://www.w3.org/2000/svg" width="96" height="96" viewBox="0 0 96 96">
-      <!-- DisplayMind: shiny silver DM in the MindSuite rounded monogram style. -->
+      <!-- DisplayMind: softly shining silver DM in the MindSuite rounded monogram style. -->
       <defs><linearGradient id="chrome" gradientUnits="userSpaceOnUse" x1="0" y1="22" x2="0" y2="74">\(svgStops)</linearGradient></defs>
       <rect width="96" height="96"\(square ? "" : " rx=\"20\"") fill="#111111"/>
       <path d="\(pathData)" fill="none" stroke="url(#chrome)" stroke-width="9" stroke-linecap="round" stroke-linejoin="round"/>
