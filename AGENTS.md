@@ -15,6 +15,7 @@ The baseline for all of Sean's repos lives in ~/GIT/AgentSuite/AGENTS.md and is 
 - A verified manual apply stays unless it is reverted within 10 seconds; never switch back by a timer (Sean, 2026-11-10). The independent watchdog rolls back only an apply that never finished, or on Revert; keep it, and keep automatic rules limited to confirmed presets.
 - Vendor changes must retain licensing and record the upstream revision and local changes in `Vendor/displayplacer/ORIGIN.md`.
 - Release with `tools/tdtp.sh` (full preflight) or `tools/dtp.sh` (build, `--diagnostics`, watchdog check): bump minor, tag `vX.Y.0`, atomic push, install; `--dry-run` prints the mutating commands.
+- DisplayMind is part of MindSuite: the lane records each tag with the sibling MindSuite checkout's `tools/mindsuite-release.mjs` (MindSuite's minor goes up); a failed record ends the lane non-zero with the command to rerun.
 - `tools/build.sh` signs with the only Developer ID Application identity (hardened runtime) when `DISPLAYMIND_SIGNING_IDENTITY` is unset, so the Accessibility grant survives rebuilds; `-` forces ad hoc.
 - `tools/install.sh` updates an installed copy in place (quits and relaunches a running app, keeps the old bundle until `--diagnostics` passes) and refuses while the data folder holds `pending-change.json` or a `restoring-*.json` under 3 minutes old.
 - Look at every screen you touch before releasing: `--render-preview` in `--dark` and light with the state flags in `Preview.swift`, and `--show` for live controls; never ship a view nobody has seen.

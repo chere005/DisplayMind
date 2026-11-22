@@ -45,4 +45,8 @@ fi
 codesign "$@" "$APP/Contents/MacOS/displayplacer"
 codesign "$@" "$APP"
 codesign --verify --deep --strict "$APP"
+# A refilled bundle keeps its folder's old date, and LaunchServices, the Dock and
+# Finder key their icon caches on it: 0.22.0's new logo never reached a Dock that
+# had cached 0.20.0's (2026-11-22). The date is not part of the signature.
+touch "$APP"
 printf 'Built %s (%s; signed: %s)\n' "$APP" "$(lipo -archs "$APP/Contents/MacOS/DisplayMind")" "$SIGN_KIND"

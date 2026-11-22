@@ -4,7 +4,9 @@
 # Options: --dry-run prints every mutating command instead of running it.
 # Env (tests): DISPLAYMIND_INSTALL_DEST installs there instead of /Applications;
 # DISPLAYMIND_REPORT_STATUS overrides the report-status.sh path; MIND_RUN_ID set
-# means a parent run owns the status card and this lane reports nothing.
+# means a parent run owns the status card and this lane reports nothing;
+# MINDSUITE_DIR (default: the MindSuite checkout beside this repo) or
+# MINDSUITE_RELEASE_TOOL points at MindSuite's tools/mindsuite-release.mjs.
 
 PLIST=Resources/Info.plist
 DRY=0
@@ -18,6 +20,13 @@ fail() { say "$*" >&2; exit 1; }
 # Run a mutating command, or print it under --dry-run.
 run() {
   if [ "$DRY" = 1 ]; then printf '+ %s\n' "$*"; else "$@"; fi
+}
+
+# MindSuite's version tool: every DisplayMind release moves MindSuite to its next minor,
+# with a note naming the tag (MindSuite 1.0.0, 2026-11-22).
+suite_tool() {
+  if [ -n "${MINDSUITE_RELEASE_TOOL:-}" ]; then printf '%s' "$MINDSUITE_RELEASE_TOOL"; return; fi
+  printf '%s/tools/mindsuite-release.mjs' "${MINDSUITE_DIR:-$(cd "$(git rev-parse --git-common-dir)/../.." && pwd)/MindSuite}"
 }
 
 report_script() {
@@ -175,6 +184,16 @@ $OTHER"
     sh tools/dmg.sh --publish-only || PUBLISH_FAILED=1
   fi
 
+  # --- MindSuite: its minor follows every app release, with a note naming this tag (after the
+  # image is published, so the tag it names is a live release). Not fatal here; reported below.
+  SUITE_FAILED=0
+  SUITE_TOOL=$(suite_tool)
+  if [ "$DRY" = 1 ]; then
+    printf '+ node %s record DisplayMind %s --app-repo %s\n' "$SUITE_TOOL" "$TAG" "$PWD"
+  elif ! node "$SUITE_TOOL" record DisplayMind "$TAG" --app-repo "$PWD"; then
+    SUITE_FAILED=1
+  fi
+
   # --- install
   INSTALL_FAILED=0
   if [ -n "${DISPLAYMIND_INSTALL_DEST:-}" ]; then
@@ -191,6 +210,10 @@ $OTHER"
   if [ "$INSTALL_FAILED" = 1 ]; then
     report finish ok 2 "Released $TAG; install on this Mac failed."
     fail "released $TAG but the install failed"
+  fi
+  if [ "$SUITE_FAILED" = 1 ]; then
+    report finish ok 2 "Released $TAG; MindSuite does not name it yet."
+    fail "released $TAG but MindSuite does not name it yet; run: node $SUITE_TOOL record DisplayMind $TAG --app-repo $PWD"
   fi
   report finish ok 0 "Released $TAG."
   if [ "$DMG_READY" = 1 ]; then say "released $TAG with its disk image and installed it"; else say "released $TAG and installed it"; fi

@@ -91,5 +91,11 @@ if ! "$TARGET/Contents/MacOS/DisplayMind" --diagnostics; then
   exit 1
 fi
 rm -rf "$PREV"
+if [ "$REAL" = 1 ]; then
+  # A new folder date and a forced re-registration make the Dock and Finder draw this
+  # build's icon, not one cached from an earlier install (see tools/build.sh).
+  touch "$TARGET"
+  /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$TARGET" || true
+fi
 relaunch
 printf 'Installed %s\n' "$TARGET"

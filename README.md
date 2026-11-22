@@ -2,7 +2,7 @@
 
 A small native macOS app for display presets and connection-based defaults.
 
-<img src="assets/logo-preview.png" width="128" alt="DisplayMind mint DM logo">
+<img src="assets/logo-preview.png" width="128" alt="DisplayMind silver DM logo">
 
 ![DisplayMind](docs/displaymind.png)
 
@@ -68,7 +68,7 @@ The output is `dist/DisplayMind.app`. Signing: `DISPLAYMIND_SIGNING_IDENTITY` if
 
 `tools/dmg.sh` packages `dist/DisplayMind.app` as `dist/DisplayMind-<version>.dmg`: it notarizes and staples the app, builds and signs the image, notarizes and staples that, and checks Gatekeeper's verdict on both. `--publish` attaches it to the GitHub release for the version's tag; `--unnotarized` builds an image to look at without notarizing. Notarization needs a notarytool keychain profile named `DisplayMind` (or `DISPLAYMIND_NOTARY_PROFILE` / `APPLE_KEYCHAIN_PROFILE`), which its Apple ID's owner creates once with `xcrun notarytool store-credentials`.
 
-Release: `tools/tdtp.sh` (full preflight) or `tools/dtp.sh` (build, `--diagnostics`, watchdog check) from a clean `main`. It bumps the minor version and build number (or reuses an untagged bump), builds the notarized disk image when the profile exists, commits, tags `vX.Y.0`, pushes atomically, publishes the image with a GitHub release, installs, and reports to the status page. Without the profile the release is a tag with no image, and the lane says so. `--dry-run` prints the mutating commands.
+Release: `tools/tdtp.sh` (full preflight) or `tools/dtp.sh` (build, `--diagnostics`, watchdog check) from a clean `main`. It bumps the minor version and build number (or reuses an untagged bump), builds the notarized disk image when the profile exists, commits, tags `vX.Y.0`, pushes atomically, publishes the image with a GitHub release, records the tag in MindSuite's version (the sibling MindSuite checkout), and installs. Without the profile the release is a tag with no image, and the lane says so. `--dry-run` prints the mutating commands.
 
 ## Storage and privacy
 
