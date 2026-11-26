@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+	<ItemGroup Label="ProjectConfigurations">
+		<ProjectConfiguration Include="Release|x64"><Configuration>Release</Configuration><Platform>x64</Platform></ProjectConfiguration>
+		<ProjectConfiguration Include="Debug|x64"><Configuration>Debug</Configuration><Platform>x64</Platform></ProjectConfiguration>
+	</ItemGroup>
+	<PropertyGroup Label="Globals"><ProjectGuid>{CE69B1B3-1796-4B5B-91AF-9209F236F134}</ProjectGuid><Keyword>Win32Proj</Keyword><RootNamespace>DisplayMind</RootNamespace><WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion></PropertyGroup>
+	<Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+	<PropertyGroup Label="Configuration"><ConfigurationType>Application</ConfigurationType><PlatformToolset>v143</PlatformToolset><CharacterSet>Unicode</CharacterSet><UseDebugLibraries Condition="'$(Configuration)'=='Debug'">true</UseDebugLibraries></PropertyGroup>
+	<Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+	<PropertyGroup><OutDir>$(MSBuildProjectDirectory)\dist\</OutDir><IntDir>$(MSBuildProjectDirectory)\build\$(Configuration)\</IntDir><TargetName>DisplayMind</TargetName></PropertyGroup>
+	<ItemDefinitionGroup>
+		<ClCompile><WarningLevel>Level4</WarningLevel><TreatWarningAsError>true</TreatWarningAsError><LanguageStandard>stdcpp20</LanguageStandard><ConformanceMode>true</ConformanceMode><AdditionalOptions>/utf-8 /permissive- %(AdditionalOptions)</AdditionalOptions><PreprocessorDefinitions>UNICODE;_UNICODE;WIN32_LEAN_AND_MEAN;NOMINMAX;_WIN32_WINNT=0x0A00;%(PreprocessorDefinitions)</PreprocessorDefinitions><RuntimeLibrary>MultiThreaded</RuntimeLibrary><Optimization>MaxSpeed</Optimization><DebugInformationFormat>ProgramDatabase</DebugInformationFormat><EnablePREfast Condition="'$(Analyze)'=='true'">true</EnablePREfast></ClCompile>
+		<Link><SubSystem>Windows</SubSystem><AdditionalDependencies>user32.lib;gdi32.lib;comctl32.lib;uxtheme.lib;dwmapi.lib;gdiplus.lib;ole32.lib;oleaut32.lib;uuid.lib;setupapi.lib;cfgmgr32.lib;shell32.lib;advapi32.lib;propsys.lib;shlwapi.lib;windowscodecs.lib;uiautomationcore.lib;%(AdditionalDependencies)</AdditionalDependencies><GenerateDebugInformation>true</GenerateDebugInformation><AdditionalManifestDependencies>type='win32' name='Microsoft.Windows.Common-Controls' version='6.0.0.0' processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*';%(AdditionalManifestDependencies)</AdditionalManifestDependencies></Link>
+		<Manifest><AdditionalManifestFiles>app.manifest</AdditionalManifestFiles><EnableDpiAwareness>PerMonitorHighDPIAware</EnableDpiAwareness></Manifest>
+	</ItemDefinitionGroup>
+	<ItemGroup><ClCompile Include="src\core.cpp" /><ClCompile Include="src\windows.cpp" /><ClCompile Include="src\recovery.cpp" /><ClCompile Include="src\ui.cpp" /></ItemGroup>
+	<ItemGroup><ResourceCompile Include="app.rc" /></ItemGroup>
+	<Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+</Project>

@@ -1,0 +1,10 @@
+{
+	"repository": "https://github.com/chere005/DisplayMind",
+	"referenceCommit": "dbb8a0bf51300738c568d123a4f2e46ed72b057f",
+	"referenceVersion": "0.11.0",
+	"acquisition": "GitHub main ZIP; commit verified from the ZIP archive comment",
+	"windowsVersion": "0.3.0",
+	"windowsBehaviorReference": "macOS DisplayMind 1.0.0 (f9042d93d59c4ac23861c15bcd6aefd600652a2d): arrangement, preset organization, monitor identity and editor reconciliation",
+	"implementation": "Independent C++20/Win32 implementation in the same repository",
+	"license": "MIT"
+}

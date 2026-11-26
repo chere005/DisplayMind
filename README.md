@@ -2,6 +2,8 @@
 
 A small native macOS app for display presets and connection-based defaults.
 
+[DisplayMind for Windows](Windows/README.md) is a native C++/Win32 companion with display presets, monitor recognition across docks, connection rules, sound selection, Miracast control, and independent recovery. Windows builds and releases use the tools in `Windows/tools` and `windows-vX.Y.0` tags.
+
 <img src="assets/logo-preview.png" width="128" alt="DisplayMind silver DM logo">
 
 ![DisplayMind](docs/displaymind.png)
